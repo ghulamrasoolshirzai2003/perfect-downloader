@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /downloaders/
+Allow: /tools/
+Allow: /status
+Disallow: /api/
+Disallow: /jobs/
+
+Sitemap: https://perfectdownloader.com/sitemap.xml

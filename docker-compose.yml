@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: perfect-downloader
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - HOST=0.0.0.0
+      - CORS_ORIGIN=http://localhost:3000
+      - API_URL=http://localhost:4000
+      - NEXT_PUBLIC_API_URL=http://localhost:4000
+      - ENABLED_RESTRICTED_PLATFORMS=${ENABLED_RESTRICTED_PLATFORMS:-}
+      - MAX_UPLOAD_SIZE_MB=200
+      - JOB_TTL_MS=900000
+    volumes:
+      - ephemeral-temp:/app/.tmp/media
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+
+volumes:
+  ephemeral-temp:

@@ -1,0 +1,34 @@
+{
+  "name": "perfect-downloader",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Universal media downloader and online media toolkit (web + API + processing workers).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "npm run dev -w @pd/api",
+    "dev:web": "npm run dev -w @pd/web",
+    "build": "npm run build -w @pd/api && npm run build -w @pd/web",
+    "start:api": "npm run start -w @pd/api",
+    "start:web": "npm run start -w @pd/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "doctor": "node scripts/doctor.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
