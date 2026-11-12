@@ -21,31 +21,64 @@ function optsFor(){
   if (an.realData && an.realData.formats && an.realData.formats.length > 0) {
     const k = kindOf(an.p);
     const isAudioTab = (an.tab === 'a' || k === 'a');
-    const filtered = an.realData.formats.filter(f => isAudioTab ? f.isAudioOnly : f.hasVideo);
-    if (filtered.length > 0) {
-      return filtered.slice(0, 5).map((f, i) => {
-        const label = f.qualityLabel || f.resolution || (isAudioTab ? 'Audio' : 'Video');
-        const ext = f.ext.toUpperCase();
-        const sz = f.filesize ? `${Math.round(f.filesize / (1024*1024))} MB` : (f.filesizeApprox ? `${Math.round(f.filesizeApprox / (1024*1024))} MB` : 'Stream');
-        return [`${label} ${ext}`, sz, i === 0 ? 1 : 0, f.formatId];
+    if (isAudioTab) {
+      const dur = an.realData.duration || 180;
+      const sz320 = Math.max(1, Math.round(dur * 320 / (8 * 1024)));
+      const sz192 = Math.max(1, Math.round(dur * 192 / (8 * 1024)));
+      const sz128 = Math.max(1, Math.round(dur * 128 / (8 * 1024)));
+      return [
+        ['MP3 320 kbps', `${sz320} MB`, 1, 'bestaudio/best', 'mp3'],
+        ['MP3 192 kbps', `${sz192} MB`, 0, 'bestaudio/best', 'mp3'],
+        ['Original M4A', `${sz128} MB`, 0, 'bestaudio/best', 'm4a']
+      ];
+    } else {
+      // Video options
+      const videoFormats = an.realData.formats.filter(f => f.hasVideo && f.height);
+      const heights = [...new Set(videoFormats.map(f => f.height))].sort((a,b) => b - a);
+      const targets = [
+        { label: '1080p MP4', h: 1080 },
+        { label: '720p MP4', h: 720 },
+        { label: '480p MP4', h: 480 },
+        { label: '360p MP4', h: 360 }
+      ];
+      const available = targets.filter(t => heights.length === 0 || heights.some(h => h >= t.h - 40));
+      const list = available.length > 0 ? available : targets.slice(-2);
+      return list.map((t, idx) => {
+        const matchingFmt = videoFormats.find(f => Math.abs(f.height - t.h) <= 40) || videoFormats[0];
+        let szStr = 'Stream';
+        if (matchingFmt && (matchingFmt.filesize || matchingFmt.filesizeApprox)) {
+          const szBytes = matchingFmt.filesize || matchingFmt.filesizeApprox;
+          szStr = `${Math.round(szBytes / (1024 * 1024))} MB`;
+        } else if (an.realData.duration) {
+          const bitrates = { 1080: 4500, 720: 2500, 480: 1200, 360: 700 };
+          const br = bitrates[t.h] || 2000;
+          const est = Math.round((an.realData.duration * br) / (8 * 1024));
+          szStr = `${Math.max(1, est)} MB`;
+        }
+        const fmtId = `bestvideo[height<=${t.h}]+bestaudio/best[height<=${t.h}]/best`;
+        return [t.label, szStr, idx === 0 ? 1 : 0, fmtId, 'mp4'];
       });
     }
   }
+
   const f=.7+(seed(an.url)%9)/10,k=kindOf(an.p),sz=x=>(x*f).toFixed(x*f<10?1:0)+' MB';
-  const V=[['1080p MP4',84,1],['720p MP4',42],['480p MP4',24],['360p MP4',14]],A=[['Best quality M4A',9,1],['MP3 320 kbps',10],['MP3 128 kbps',4]],Im=[['Original JPG',3.2,1],['Large JPG',1.4],['PNG',5.1]];
-  return(an.tab==='a'||k==='a'?A:k==='i'?Im:V).map(o=>[o[0],sz(o[1]),o[2],o[0]]);
+  const V=[['1080p MP4',84,1,'bestvideo[height<=1080]+bestaudio/best','mp4'],['720p MP4',42,0,'bestvideo[height<=720]+bestaudio/best','mp4'],['480p MP4',24,0,'bestvideo[height<=480]+bestaudio/best','mp4'],['360p MP4',14,0,'bestvideo[height<=360]+bestaudio/best','mp4']],A=[['MP3 320 kbps',10,1,'bestaudio/best','mp3'],['MP3 192 kbps',7,0,'bestaudio/best','mp3'],['MP3 128 kbps',4,0,'bestaudio/best','mp3']],Im=[['Original JPG',3.2,1,'best','jpg'],['Large JPG',1.4,0,'best','jpg'],['PNG',5.1,0,'best','png']];
+  return(an.tab==='a'||k==='a'?A:k==='i'?Im:V).map(o=>[o[0],sz(o[1]),o[2],o[3]||'best',o[4]]);
 }
 
 function paint(){
   const r=$('#res');if(!r)return;const s=an.st;
   if(s==='idle')return r.innerHTML='';
   if(s==='load')return r.innerHTML=`<div class="rc"><div class="rrow"><div class="sk thm" style="height:76px"></div><div style="flex:1;width:100%;display:grid;gap:8px"><div class="sk" style="height:16px;width:65%"></div><div class="sk" style="height:12px;width:35%"></div></div></div><div class="sk" style="height:170px;margin-top:18px"></div></div>`;
-  if(s==='err')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">That doesn’t look like a link</b><p style="color:var(--mut);font-size:14px;margin-top:2px">Paste a full address beginning with https://</p></div>`;
+  if(s==='err')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">${esc(an.errMsg||'That doesn’t look like a link')}</b><p style="color:var(--mut);font-size:14px;margin-top:2px">${esc(an.errDetail||'Paste a full address beginning with https://')}</p><button class="btn" id="again-err" style="margin-top:14px">Try another link</button></div>`;
   if(s==='uns')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">This site isn’t supported yet</b><p style="color:var(--mut);font-size:14px;margin-top:2px">See the <a href="#platforms" style="color:var(--ac)">full list of supported platforms</a>.</p></div>`;
   const p=an.p,k=kindOf(p);
   if(s==='done'){
-    r.innerHTML=`<div class="rc"><div class="det">${lg(p,22)}${p.n}</div><b style="display:block;margin:8px 0 4px">Download complete</b><p style="color:var(--mut);margin-bottom:16px;font-size:14px">${an.realDownloaded ? 'File saved to your device.' : 'Prototype: no file is generated.'}</p><button class="btn" id="again">Download another link</button></div>`;
-    return $('#again').onclick=()=>{an={...an,st:'idle',url:'',clip:false,realData:null};$('#u').value='';paint();};
+    const fn = an.outputFileName || 'media-download';
+    const dlLink = an.downloadUrl || '#';
+    r.innerHTML=`<div class="rc"><div class="det">${lg(p,22)}${p.n}</div><b style="display:block;margin:8px 0 4px">Download complete</b><p style="color:var(--mut);margin-bottom:16px;font-size:14px">Your file is ready: <span class="mono" style="color:var(--tx)">${esc(fn)}</span></p><a class="btn k" id="dl-file-btn" href="${dlLink}" download="${esc(fn)}" style="width:100%;margin-bottom:10px;height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none">${I('dl')} Save ${esc(fn)}</a><button class="btn" id="again" style="width:100%">Download another link</button></div>`;
+    const ag=$('#again');if(ag)ag.onclick=()=>{an={...an,st:'idle',url:'',clip:false,realData:null,downloadUrl:null};const uInput=$('#u');if(uInput)uInput.value='';paint();};
+    return;
   }
   const O=optsFor(),sec=130+seed(an.url)%400,dur=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
   const thmHtml = an.thumbnail 
@@ -54,117 +87,118 @@ function paint(){
   const titleText = an.title || `Sample ${k==='a'?'track':k==='i'?'image':'video'} title`;
   const durText = an.dur || dur;
 
-  r.innerHTML=`<div class="rc"><div class="rrow">${thmHtml}<div><div class="det">${lg(p,22)}${p.n} detected</div><b>${esc(titleText)}</b><small>${k==='i'?'Image':durText}${an.realData ? '' : ', preview data (simulated)'}</small></div></div>
+  r.innerHTML=`<div class="rc"><div class="rrow">${thmHtml}<div><div class="det">${lg(p,22)}${p.n} detected</div><b>${esc(titleText)}</b><small>${k==='i'?'Image':durText}${an.uploader ? ' • ' + esc(an.uploader) : ''}</small></div></div>
   ${k==='v'?`<div class="seg" role="tablist"><button class="${an.tab==='v'?'on':''}" data-t="v">Video</button><button class="${an.tab==='a'?'on':''}" data-t="a">Audio only</button></div>`:'<div style="height:16px"></div>'}
   <div class="opts" role="radiogroup">${O.map((o,i)=>`<button class="o ${i===an.opt?'on':''}" data-o="${i}" role="radio" aria-checked="${i===an.opt}"><span><i class="r"></i>${o[0]}${o[2]?'<span class="best">BEST</span>':''}</span><span class="mono">${o[1]}</span></button>`).join('')}</div>
   ${k==='i'?'':`<div class="clip"><label><input type="checkbox" id="cl" ${an.clip?'checked':''}> Download only a section</label>${an.clip?`<input class="ip" id="ca" value="${an.a}" aria-label="Start"><span class="mono">to</span><input class="ip" id="cb" value="${an.b}" aria-label="End">`:''}</div>`}
-  ${s==='prog'?'<div class="pg"><i id="pb"></i></div>':`<button class="btn k" id="dlb" style="width:100%;margin-top:16px;height:50px;font-size:15px">${I('dl')} Download ${O[an.opt][0]}</button>`}</div>`;
+  ${s==='prog'?`<div style="margin-top:16px"><div style="display:flex;justify-content:space-between;font-size:13px;color:var(--mut);margin-bottom:6px"><span id="pst">${esc(an.stage||'Downloading media...')}</span><span class="mono" id="ppc">${an.pct?an.pct+'%':''}</span></div><div class="pg"><i id="pb" style="width:${Math.max(an.pct||0, 4)}%"></i></div></div>`:`<button class="btn k" id="dlb" style="width:100%;margin-top:16px;height:50px;font-size:15px">${I('dl')} Download ${O[an.opt] ? O[an.opt][0] : 'Media'}</button>`}</div>`;
   r.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{an.opt=+b.dataset.o;paint()});
   r.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{an.tab=b.dataset.t;an.opt=0;paint()});
   const cl=$('#cl');if(cl)cl.onchange=()=>{an.clip=cl.checked;paint()};
-  const ca=$('#ca');if(ca){ca.oninput=()=>an.a=ca.value;$('#cb').oninput=e=>an.b=e.target.value}
+  const ca=$('#ca');if(ca){ca.oninput=()=>an.a=ca.value;const cb=$('#cb');if(cb)cb.oninput=e=>an.b=e.target.value;}
+  const againErr=$('#again-err');if(againErr)againErr.onclick=()=>{an={...an,st:'idle',url:'',errMsg:'',errDetail:''};const uInput=$('#u');if(uInput)uInput.value='';paint();};
 
   const d=$('#dlb');
   if(d)d.onclick=()=>{
-    an.st='prog';paint();
+    an.st='prog';
+    an.pct=0;
+    an.stage='Connecting to downloader...';
+    paint();
 
-    // If real backend inspection succeeded, trigger real download
-    if (an.realData) {
-      const chosen = O[an.opt];
-      const formatId = chosen[3] || 'best';
-      const isAudio = (an.tab === 'a' || k === 'a');
-      fetch('/api/v1/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: an.url,
-          formatId,
-          title: an.title,
-          targetFormat: isAudio ? 'mp3' : undefined,
-          attestation: true
-        })
-      })
-      .then(r => r.json())
-      .then(body => {
-        if (body.job) {
-          const jId = body.job.id;
-          const check = setInterval(() => {
-            fetch(`/api/v1/jobs/${jId}`)
-            .then(r => r.json())
-            .then(jBody => {
-              const pb = $('#pb');
-              if (pb && jBody.job?.progress?.percent) {
-                pb.style.width = Math.min(jBody.job.progress.percent, 100) + '%';
-              }
-              if (jBody.job?.status === 'completed') {
-                clearInterval(check);
-                an.st = 'done';
-                an.realDownloaded = true;
-                paint();
-                toast('Download complete');
-                if (jBody.job.downloadUrl) {
-                  const dlLink = document.createElement('a');
-                  dlLink.href = jBody.job.downloadUrl;
-                  dlLink.download = jBody.job.outputFileName || 'media';
-                  document.body.appendChild(dlLink);
-                  dlLink.click();
-                  document.body.removeChild(dlLink);
-                }
-              } else if (jBody.job?.status === 'failed') {
-                clearInterval(check);
-                an.st = 'done';
-                paint();
-                toast('Download complete');
-              }
-            })
-            .catch(() => {});
-          }, 600);
-          return;
-        }
-        throw new Error();
-      })
-      .catch(() => {
-        let n=0;
-        const t=setInterval(()=>{
-          n+=7;
-          const b=$('#pb');
-          if(b)b.style.width=Math.min(n,100)+'%';
-          if(n>=100){
-            clearInterval(t);
-            an.st='done';
-            paint();
-            toast('Download complete');
-          }
-        },110);
-      });
-      return;
-    }
+    const chosen = O[an.opt] || O[0];
+    const formatId = chosen[3] || 'best';
+    const isAudio = (an.tab === 'a' || k === 'a');
+    const targetFormat = chosen[4] || (isAudio ? 'mp3' : undefined);
 
-    // Default simulation fallback
-    let n=0;
-    const t=setInterval(()=>{
-      n+=7;
-      const b=$('#pb');
-      if(b)b.style.width=Math.min(n,100)+'%';
-      if(n>=100){
-        clearInterval(t);
-        an.st='done';
-        paint();
-        toast('Download complete');
+    fetch('/api/v1/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: an.url,
+        formatId,
+        title: an.title || 'media',
+        targetFormat,
+        clipStart: an.clip ? an.a : undefined,
+        clipEnd: an.clip ? an.b : undefined,
+        attestation: true
+      })
+    })
+    .then(r => r.json())
+    .then(body => {
+      if (body.job) {
+        const jId = body.job.id;
+        const check = setInterval(() => {
+          fetch(`/api/v1/jobs/${jId}`)
+          .then(r => r.json())
+          .then(jBody => {
+            const pb = $('#pb');
+            const pst = $('#pst');
+            const ppc = $('#ppc');
+            if (jBody.job?.progress?.percent !== undefined) {
+              an.pct = Math.min(Math.round(jBody.job.progress.percent), 100);
+              if (pb) pb.style.width = Math.max(an.pct, 4) + '%';
+              if (ppc) ppc.textContent = an.pct + '%';
+            }
+            if (jBody.job?.progress?.stage) {
+              an.stage = jBody.job.progress.stage;
+              if (pst) pst.textContent = an.stage;
+            }
+            if (jBody.job?.status === 'completed') {
+              clearInterval(check);
+              an.st = 'done';
+              an.realDownloaded = true;
+              an.downloadUrl = jBody.job.downloadUrl;
+              an.outputFileName = jBody.job.outputFileName || 'media';
+              paint();
+              toast('Download complete');
+              if (jBody.job.downloadUrl) {
+                const dlLink = document.createElement('a');
+                dlLink.href = jBody.job.downloadUrl;
+                dlLink.download = jBody.job.outputFileName || 'media';
+                document.body.appendChild(dlLink);
+                dlLink.click();
+                setTimeout(() => { try { document.body.removeChild(dlLink); } catch(e){} }, 1500);
+              }
+            } else if (jBody.job?.status === 'failed') {
+              clearInterval(check);
+              an.st = 'err';
+              an.errMsg = 'Download failed';
+              an.errDetail = jBody.job.error?.message || 'Download could not be completed';
+              paint();
+              toast('Download failed');
+            }
+          })
+          .catch(() => {});
+        }, 600);
+        return;
       }
-    },110);
+      throw new Error(body.message || 'No job created');
+    })
+    .catch((err) => {
+      an.st = 'err';
+      an.errMsg = 'Unable to start download';
+      an.errDetail = err.message || 'Check connection to backend server';
+      paint();
+      toast('Download failed');
+    });
   };
 }
 
 function analyse(){
-  const v=$('#u').value.trim();
+  let v=$('#u').value.trim();
+  if(!v)return;
+  if(!/^https?:\/\//i.test(v)){v='https://'+v;}
   an.url=v;
   let u;
-  try{u=new URL(v)}catch(e){an.st='err';return paint()}
-  if(!/^https?:$/.test(u.protocol)||!u.hostname.includes('.')){an.st='err';return paint()}
-  const p=PL.find(p=>p.h.some(h=>u.hostname===h||u.hostname.endsWith('.'+h)));
-  if(!p){an.st='uns';return paint()}
-  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.st='load';an.realData=null;paint();
+  try{u=new URL(v)}catch(e){an.st='err';an.errMsg='That doesn’t look like a link';an.errDetail='Paste a valid web URL';return paint()}
+  if(!u.hostname.includes('.')){an.st='err';an.errMsg='Invalid domain name';an.errDetail='Include full domain like youtube.com';return paint()}
+  
+  let p=PL.find(p=>p.h.some(h=>u.hostname===h||u.hostname.endsWith('.'+h)));
+  if(!p){
+    // Fallback platform object for any supported web URL
+    p = { n: u.hostname.replace(/^www\./i, ''), c: 1, t: 'Media', h: [u.hostname], s: 'media' };
+  }
+  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.st='load';an.realData=null;an.errMsg='';an.errDetail='';paint();
 
   // Connect to real backend /api/v1/inspect
   fetch('/api/v1/inspect', {
@@ -179,17 +213,24 @@ function analyse(){
       an.realData = body.data;
       an.title = body.data.title;
       an.thumbnail = body.data.thumbnail;
+      an.uploader = body.data.uploader;
       if (body.data.duration) {
         const sec = Math.floor(body.data.duration);
         an.dur = `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
       }
       paint();
     } else {
-      setTimeout(()=>{ if($('#res')){ an.st='ready'; paint(); } }, 800);
+      an.st = 'err';
+      an.errMsg = body.message || 'Media not found';
+      an.errDetail = body.error || 'Could not extract stream. Please verify the URL is public and available.';
+      paint();
     }
   })
-  .catch(() => {
-    setTimeout(()=>{ if($('#res')){ an.st='ready'; paint(); } }, 1200);
+  .catch(err => {
+    an.st = 'err';
+    an.errMsg = 'Network request failed';
+    an.errDetail = err.message || 'Could not reach backend inspector';
+    paint();
   });
 }
 

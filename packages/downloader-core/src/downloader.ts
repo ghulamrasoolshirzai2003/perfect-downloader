@@ -14,6 +14,8 @@ export interface ExecuteDownloadOptions {
   attestation?: boolean;
   title?: string;
   targetFormat?: string;
+  clipStart?: string;
+  clipEnd?: string;
   runtimeContext: PlatformRuntimeContext;
   tempManager: TempStorageManager;
   onProgress?: (progress: YtDlpDownloadProgress) => void;
@@ -27,7 +29,7 @@ export interface ExecuteDownloadResult {
 }
 
 export async function executeDownload(opts: ExecuteDownloadOptions): Promise<ExecuteDownloadResult> {
-  const { url: rawUrl, formatId, title, attestation, targetFormat, runtimeContext, tempManager, onProgress, signal } = opts;
+  const { url: rawUrl, formatId, title, attestation, targetFormat, clipStart, clipEnd, runtimeContext, tempManager, onProgress, signal } = opts;
 
   const detection = detectPlatform(rawUrl);
   const platform = detection.platform;
@@ -65,7 +67,7 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
 
   const effectiveFormat = (formatId === 'best' || formatId.includes('+') || formatId.includes('/') || targetFormat === 'mp3')
     ? (targetFormat === 'mp3' ? 'bestaudio/best' : formatId)
-    : `${formatId}+bestaudio/best`;
+    : `${formatId}+bestaudio/${formatId}/best`;
 
   try {
     await runYtDlpDownload({
@@ -109,6 +111,23 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
       finalFile = convertedTemp;
       finalExt = 'mp3';
       mimeType = 'audio/mpeg';
+    }
+
+    // If clipping is requested (start and/or end time)
+    if (clipStart || clipEnd) {
+      const clipTemp = await tempManager.createTempFile({ prefix: 'clip', extension: finalExt });
+      const args: string[] = ['-i', finalFile.path];
+      if (clipStart) args.push('-ss', clipStart);
+      if (clipEnd) args.push('-to', clipEnd);
+      if (finalExt === 'mp3') {
+        args.push('-c:a', 'libmp3lame', '-b:a', '192k');
+      } else {
+        args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac');
+      }
+      args.push(clipTemp.path);
+      await runFFmpeg({ args, signal });
+      await finalFile.cleanup();
+      finalFile = clipTemp;
     }
 
     const cleanTitle = (title ? title.replace(/[/\\?%*:|"<>]/g, '_').trim().slice(0, 100) : 'media') || 'download';

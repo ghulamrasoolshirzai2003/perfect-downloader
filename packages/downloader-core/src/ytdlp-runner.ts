@@ -175,26 +175,52 @@ export async function runYtDlpDownload(opts: YtDlpDownloadOptions): Promise<void
 
     let lineBuffer = '';
 
+    const parseProgress = (text: string) => {
+      if (!onProgress) return;
+      const lines = text.split(/[\r\n]+/);
+      for (const line of lines) {
+        // Custom progress template: e.g. "download:[12345/67890] [ 45.2%] [ 2.4MiB/s] [ 00:15]"
+        const customMatch = /download:\[([^\]]*)\]\s*\[\s*([0-9.]+)%\]\s*\[([^\]]*)\]\s*\[([^\]]*)\]/.exec(line);
+        if (customMatch) {
+          const percent = parseFloat(customMatch[2] ?? '0');
+          const speed = customMatch[3]?.trim();
+          const eta = customMatch[4]?.trim();
+          onProgress({ percent, speed, eta });
+          continue;
+        }
+
+        // Standard yt-dlp progress: e.g. "[download]   0.5% of  316.85MiB at    1.86MiB/s ETA 02:51"
+        const stdMatch = /\[download\]\s+([0-9.]+)%\s+of\s+([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/.exec(line);
+        if (stdMatch) {
+          const percent = parseFloat(stdMatch[1] ?? '0');
+          const totalSize = stdMatch[2]?.trim();
+          const speed = stdMatch[3]?.trim();
+          const eta = stdMatch[4]?.trim();
+          onProgress({ percent, speed, eta, totalSize });
+          continue;
+        }
+
+        // Simpler fallback percent match
+        const simpleMatch = /\[download\]\s+([0-9.]+)%/.exec(line);
+        if (simpleMatch) {
+          const percent = parseFloat(simpleMatch[1] ?? '0');
+          onProgress({ percent });
+        }
+      }
+    };
+
     proc.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf-8');
       lineBuffer += text;
       const lines = lineBuffer.split(/[\r\n]+/);
       lineBuffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        // e.g. "download:[12345/67890] [ 45.2%] [ 2.4MiB/s] [ 00:15]"
-        const match = /download:\[([^\]]*)\]\s*\[\s*([0-9.]+)%\]\s*\[([^\]]*)\]\s*\[([^\]]*)\]/.exec(line);
-        if (match && onProgress) {
-          const percent = parseFloat(match[2] ?? '0');
-          const speed = match[3]?.trim();
-          const eta = match[4]?.trim();
-          onProgress({ percent, speed, eta });
-        }
-      }
+      parseProgress(text);
     });
 
     proc.stderr.on('data', (chunk: Buffer) => {
-      stderrAcc += chunk.toString('utf-8');
+      const text = chunk.toString('utf-8');
+      stderrAcc += text;
+      parseProgress(text);
     });
 
     proc.on('error', (err) => {

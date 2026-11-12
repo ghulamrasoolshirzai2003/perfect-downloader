@@ -75,6 +75,8 @@ export const DownloadRequestSchema = z.object({
   targetFormat: z.string().max(16).optional(),
   /** Optional media title for nice filename output */
   title: z.string().max(256).optional(),
+  clipStart: z.string().max(32).optional(),
+  clipEnd: z.string().max(32).optional(),
 });
 export type DownloadRequest = z.infer<typeof DownloadRequestSchema>;
 
