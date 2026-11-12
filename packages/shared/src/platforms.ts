@@ -381,13 +381,16 @@ export function isPlatformUsable(status: PlatformStatus): boolean {
 
 export function parsePlatformList(value: string | undefined | null): Set<string> {
   if (!value) return new Set();
-  return new Set(
-    value
-      .split(',')
-      .map((s) => s.trim().toLowerCase())
-      .filter((s) => s.length > 0 && PLATFORM_BY_ID.has(s)),
-  );
+  const items = value
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (items.includes('all') || items.includes('*')) {
+    return new Set(PLATFORMS.map((p) => p.id));
+  }
+  return new Set(items.filter((s) => PLATFORM_BY_ID.has(s)));
 }
+
 
 /** Serializable public view returned by GET /api/v1/platforms. */
 export interface PublicPlatform {

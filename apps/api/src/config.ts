@@ -16,7 +16,7 @@ export function loadConfig(): AppConfig {
   const port = parseInt(process.env.PORT || '4000', 10);
   const host = process.env.HOST || '0.0.0.0';
   const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
-  const enabledRestrictedPlatforms = parsePlatformList(process.env.ENABLED_RESTRICTED_PLATFORMS);
+  const enabledRestrictedPlatforms = parsePlatformList(process.env.ENABLED_RESTRICTED_PLATFORMS || 'all');
   const disabledPlatforms = parsePlatformList(process.env.DISABLED_PLATFORMS);
   const maxUploadSizeMb = parseInt(process.env.MAX_UPLOAD_SIZE_MB || '200', 10);
   const tempMediaDir = path.resolve(process.env.TEMP_MEDIA_DIR || path.join(process.cwd(), '.tmp', 'media'));

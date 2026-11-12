@@ -17,7 +17,7 @@ function paint(){
   const r=$('#res');if(!r)return;const s=an.st;
   if(s==='idle')return r.innerHTML='';
   if(s==='load')return r.innerHTML=`<div class="rc"><div class="rrow"><div class="sk thm"></div><div style="flex:1;width:100%;display:grid;gap:8px"><div class="sk" style="height:16px;width:65%"></div><div class="sk" style="height:12px;width:35%"></div></div></div><div class="sk" style="height:160px;margin-top:16px"></div></div>`;
-  if(s==='err')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">Invalid link</b><p style="color:var(--mut);font-size:14px;margin-top:2px">Paste a full address beginning with https://</p></div>`;
+  if(s==='err')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">${an.errMsg || 'Invalid link'}</b><p style="color:var(--mut);font-size:14px;margin-top:2px">${an.errDetail || 'Paste a full address beginning with https://'}</p></div>`;
   if(s==='done'){
     const optName = (an.formats && an.formats[an.opt] ? an.formats[an.opt][0] : FM[an.opt][0]);
     r.innerHTML=`<div class="rc"><span class="dot" style="--c:var(--ok)">Complete</span><p style="margin:10px 0 16px">Saved ${optName} to your device.</p><button class="btn" id="again">Analyse another link</button></div>`;
@@ -26,21 +26,33 @@ function paint(){
   const optList = an.formats || FM;
   const titleText = an.title || 'Sample media title';
   const durText = an.duration || '04:12';
-  r.innerHTML=`<div class="rc"><div class="rrow"><div class="thm">${I('play',24)}</div><div><span class="mono" style="color:var(--ok)">Ready · ${durText}</span><b style="display:block;font-weight:600">${titleText}</b><span style="color:var(--mut);font-size:13px">${an.realData ? 'Verified stream options' : 'Preview data — simulated'}</span></div></div><div class="opts" role="radiogroup">${optList.map((f,i)=>`<button class="o ${i===an.opt?'on':''}" data-o="${i}" role="radio" aria-checked="${i===an.opt}"><span><i class="r"></i>${f[0]}</span><span class="mono">${f[1]}</span></button>`).join('')}</div>${s==='prog'?'<div class="pg"><i id="pb"></i></div>':`<button class="btn k" id="dlb" style="width:100%">${I('dl')} Download</button>`}</div>`;
+  const thmHtml = an.thumbnail ? `<div class="thm" style="overflow:hidden;padding:0;background:var(--s2)"><img src="${an.thumbnail}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:8px"></div>` : `<div class="thm">${I('play',24)}</div>`;
+
+  r.innerHTML=`<div class="rc"><div class="rrow">${thmHtml}<div><span class="mono" style="color:var(--ok)">Ready · ${durText}</span><b style="display:block;font-weight:600;max-width:480px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${titleText}</b><span style="color:var(--mut);font-size:13px">${an.realData ? 'Verified stream options' : 'Preview data — simulated'}</span></div></div><div class="opts" role="radiogroup">${optList.map((f,i)=>`<button class="o ${i===an.opt?'on':''}" data-o="${i}" role="radio" aria-checked="${i===an.opt}"><span><i class="r"></i>${f[0]}</span><span class="mono">${f[1]}</span></button>`).join('')}</div>${s==='prog'?`<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:13px;color:var(--mut);margin-bottom:6px"><span>Downloading...</span><span id="pst">${an.progressText || 'Preparing stream'}</span></div><div class="pg"><i id="pb" style="width:${an.progressPercent || 0}%"></i></div></div>`:`<button class="btn k" id="dlb" style="width:100%">${I('dl')} Download</button>`}</div>`;
   r.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{an.opt=+b.dataset.o;paint()});
   
   const d=$('#dlb');
   if(d)d.onclick=()=>{
-    an.st='prog';paint();
+    an.st='prog';
+    an.progressPercent=0;
+    an.progressText='Connecting...';
+    paint();
 
     // If real backend inspection succeeded, trigger real download
     if (an.realData && an.formats && an.formats[an.opt]) {
       const chosen = an.formats[an.opt];
       const formatId = chosen[2] || chosen[0];
+      const isAudio = chosen[0].toLowerCase().includes('mp3') || chosen[0].toLowerCase().includes('audio');
       fetch('/api/v1/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: an.url, formatId, attestation: true })
+        body: JSON.stringify({
+          url: an.url,
+          formatId,
+          title: an.title,
+          targetFormat: isAudio ? 'mp3' : undefined,
+          attestation: true
+        })
       })
       .then(r => r.json())
       .then(body => {
@@ -51,8 +63,16 @@ function paint(){
             .then(r => r.json())
             .then(jBody => {
               const pb = $('#pb');
-              if (pb && jBody.job?.progress?.percent) {
-                pb.style.width = jBody.job.progress.percent + '%';
+              const pst = $('#pst');
+              if (jBody.job?.progress) {
+                const p = jBody.job.progress;
+                const pct = p.percent || 0;
+                an.progressPercent = pct;
+                if (pb) pb.style.width = pct + '%';
+                const speedText = p.speed ? ` · ${p.speed}` : '';
+                const etaText = p.eta ? ` · ETA ${p.eta}` : '';
+                an.progressText = `${Math.round(pct)}%${speedText}${etaText}`;
+                if (pst) pst.textContent = an.progressText;
               }
               if (jBody.job?.status === 'completed') {
                 clearInterval(check);
@@ -60,28 +80,34 @@ function paint(){
                 paint();
                 toast('Download complete');
                 if (jBody.job.downloadUrl) {
-                  window.location.href = jBody.job.downloadUrl;
+                  const dlLink = document.createElement('a');
+                  dlLink.href = jBody.job.downloadUrl;
+                  dlLink.download = jBody.job.outputFileName || 'media';
+                  document.body.appendChild(dlLink);
+                  dlLink.click();
+                  document.body.removeChild(dlLink);
                 }
               } else if (jBody.job?.status === 'failed') {
                 clearInterval(check);
-                an.st = 'done';
+                an.st = 'err';
+                an.errMsg = 'Download failed';
+                an.errDetail = jBody.job.error?.message || 'The server could not retrieve this stream';
                 paint();
-                toast('Download ready');
               }
             })
-            .catch(() => clearInterval(check));
-          }, 800);
+            .catch(() => {});
+          }, 600);
           return;
         }
         throw new Error();
       })
-      .catch(() => {
+      .catch((err) => {
         // Fallback simulation
         let n=0;
         const t=setInterval(()=>{
           n+=7;
-          const b=$('#pb');
-          if(b)b.style.width=Math.min(n,100)+'%';
+          const pb=$('#pb');
+          if(pb)pb.style.width=Math.min(n,100)+'%';
           if(n>=100){
             clearInterval(t);
             an.st='done';
@@ -112,7 +138,12 @@ function paint(){
 function analyse(){
   const v=$('#u').value.trim();
   an.url=v;
-  if(!/^https?:\/\/[^\s.]+\.[^\s]+$/.test(v)){an.st='err';return paint()}
+  if(!/^https?:\/\/[^\s.]+\.[^\s]+$/.test(v)){
+    an.st='err';
+    an.errMsg = 'Invalid link';
+    an.errDetail = 'Paste a full address beginning with https://';
+    return paint();
+  }
   an.st='load';paint();
 
   // Try real API inspect first
@@ -123,6 +154,13 @@ function analyse(){
   })
   .then(res => res.json())
   .then(body => {
+    if (body.error) {
+      an.st = 'err';
+      an.errMsg = 'Inspection error';
+      an.errDetail = body.error.message || 'Could not inspect this link';
+      return paint();
+    }
+
     if (body.data && body.data.formats && body.data.formats.length > 0) {
       an.st = 'ready';
       an.opt = 0;
@@ -133,14 +171,21 @@ function analyse(){
         const sizeMb = f.filesize ? `${Math.round(f.filesize / (1024*1024))} MB` : (f.filesizeApprox ? `${Math.round(f.filesizeApprox / (1024*1024))} MB` : 'Stream');
         return [`${ext} · ${quality}`, sizeMb, f.formatId];
       });
+
+      const hasAudioOption = an.formats.some(f => f[0].includes('MP3') || f[0].includes('Audio'));
+      if (!hasAudioOption) {
+        an.formats.push(['MP3 · 192 kbps (Audio)', 'Audio', 'bestaudio/best']);
+      }
+
       an.title = body.data.title || 'Sample media';
+      an.thumbnail = body.data.thumbnail;
       an.duration = body.data.duration ? `${Math.floor(body.data.duration / 60)}:${String(Math.floor(body.data.duration % 60)).padStart(2, '0')}` : '04:12';
       paint();
     } else {
       throw new Error();
     }
   })
-  .catch(() => {
+  .catch((err) => {
     setTimeout(()=>{
       an.st='ready';
       an.opt=0;
@@ -149,6 +194,7 @@ function analyse(){
     }, 1300);
   });
 }
+
 
 const anBar=()=>`<div class="an"><label>${I('link',20)}<input id="u" type="url" placeholder="Paste a video, audio or image link" aria-label="Media link" value="${an.url}"></label><button class="btn k" id="go">Analyse ${I('arr')}</button></div><div id="res"></div>`;
 const CARDS=[['campaign-final.mp4','video','MP4','412 MB'],['annual-report.pdf','pdf','PDF','28 MB'],['podcast-ep42.wav','audio','WAV','186 MB'],['brand-kit.png','image','PNG','9 MB'],['archive-q3.zip','files','ZIP','64 MB'],['keynote-clip.mov','video','MOV','220 MB'],['contract-final.pdf','pdf','PDF','12 MB'],['voiceover.mp3','audio','MP3','8 MB'],['hero-shot.webp','image','WebP','3 MB'],['exports.zip','files','ZIP','140 MB']];

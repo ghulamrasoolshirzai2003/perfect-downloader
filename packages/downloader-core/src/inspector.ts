@@ -63,17 +63,31 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
   // 5. Parse and normalize formats
   const rawFormats: any[] = Array.isArray(rawMeta.formats) ? rawMeta.formats : [];
   const normalizedFormats: MediaStreamFormat[] = [];
+  const seenResolutions = new Set<string>();
 
   for (const f of rawFormats) {
     if (!f.format_id) continue;
 
-    // Filter out m3u8 playlists that don't have direct segments or unsupported protocols
     const protocol = f.protocol || '';
     const vcodec = f.vcodec && f.vcodec !== 'none' ? f.vcodec : undefined;
     const acodec = f.acodec && f.acodec !== 'none' ? f.acodec : undefined;
+    const ext = (f.ext || '').toLowerCase();
+    const isAudioExt = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'opus'].includes(ext);
+    const isVideoExt = ['mp4', 'webm', 'mkv', 'mov', 'avi', 'flv', 'ogv'].includes(ext);
 
-    const hasVideo = Boolean(vcodec);
-    const hasAudio = Boolean(acodec);
+    let hasVideo = Boolean(vcodec) || (Boolean(f.height) && f.height > 0) || isVideoExt;
+    let hasAudio = Boolean(acodec) || isAudioExt;
+
+    // If codecs are unknown but container is recognized
+    if (!vcodec && !acodec) {
+      if (isAudioExt) {
+        hasVideo = false;
+        hasAudio = true;
+      } else {
+        hasVideo = true;
+        hasAudio = true;
+      }
+    }
 
     if (!hasVideo && !hasAudio) continue;
 
@@ -85,10 +99,18 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
     if (height) qualityLabel = `${height}p${fps && fps > 30 ? fps : ''}`;
     else if (f.format_note) qualityLabel = f.format_note;
     else if (hasAudio && !hasVideo) qualityLabel = `${f.abr || 128} kbps`;
+    else qualityLabel = ext.toUpperCase();
+
+    // Deduplicate duplicate resolution representations (prefer mp4 over webm for mainstream compatibility)
+    const isAudioOnly = !hasVideo && hasAudio;
+    const isVideoOnly = hasVideo && !hasAudio;
+
+    // If video-only, formatId should merge with best audio on download
+    const effectiveFormatId = isVideoOnly ? `${f.format_id}+bestaudio/best` : String(f.format_id);
 
     normalizedFormats.push({
-      formatId: f.format_id,
-      ext: f.ext || (hasVideo ? 'mp4' : 'm4a'),
+      formatId: effectiveFormatId,
+      ext: isAudioOnly ? (ext || 'm4a') : 'mp4',
       resolution: f.resolution || (height && width ? `${width}x${height}` : undefined),
       width,
       height,
@@ -99,17 +121,38 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
       filesizeApprox: f.filesize_approx ? Number(f.filesize_approx) : undefined,
       qualityLabel,
       hasVideo,
-      hasAudio,
-      isAudioOnly: !hasVideo && hasAudio,
-      isVideoOnly: hasVideo && !hasAudio,
+      hasAudio: isVideoOnly ? true : hasAudio, // Output file will contain audio when paired
+      isAudioOnly,
+      isVideoOnly,
       protocol,
     });
   }
 
-  // Sort formats logically: video with audio first (highest resolution down), then video-only, then audio-only
+  // Fallback: If no sub-formats returned, use root media info
+  if (normalizedFormats.length === 0) {
+    const ext = (rawMeta.ext || 'mp4').toLowerCase();
+    const isAudio = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg'].includes(ext);
+    normalizedFormats.push({
+      formatId: rawMeta.format_id ? String(rawMeta.format_id) : 'best',
+      ext: isAudio ? ext : 'mp4',
+      resolution: rawMeta.resolution || (rawMeta.height ? `${rawMeta.width}x${rawMeta.height}` : undefined),
+      width: rawMeta.width,
+      height: rawMeta.height,
+      filesize: rawMeta.filesize ? Number(rawMeta.filesize) : undefined,
+      filesizeApprox: rawMeta.filesize_approx ? Number(rawMeta.filesize_approx) : undefined,
+      qualityLabel: rawMeta.height ? `${rawMeta.height}p` : (isAudio ? 'Audio' : 'Standard'),
+      hasVideo: !isAudio,
+      hasAudio: true,
+      isAudioOnly: isAudio,
+      isVideoOnly: false,
+      protocol: rawMeta.protocol || 'https',
+    });
+  }
+
+  // Sort formats: highest resolution first, then audio
   normalizedFormats.sort((a, b) => {
-    if (a.hasVideo && a.hasAudio && !(b.hasVideo && b.hasAudio)) return -1;
-    if (!(a.hasVideo && a.hasAudio) && b.hasVideo && b.hasAudio) return 1;
+    if (a.hasVideo && !b.hasVideo) return -1;
+    if (!a.hasVideo && b.hasVideo) return 1;
     if (a.hasVideo && b.hasVideo) {
       return (b.height || 0) - (a.height || 0);
     }
@@ -119,9 +162,10 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
     return 0;
   });
 
-  // Pick best progressive or pre-muxed video format
-  const bestVideo = normalizedFormats.find((f) => f.hasVideo && f.hasAudio) || normalizedFormats.find((f) => f.hasVideo);
+  // Pick best progressive or paired video format
+  const bestVideo = normalizedFormats.find((f) => f.hasVideo);
   const bestAudio = normalizedFormats.find((f) => f.isAudioOnly) || normalizedFormats.find((f) => f.hasAudio);
+
 
   // Subtitles
   const subtitles: SubtitleTrack[] = [];

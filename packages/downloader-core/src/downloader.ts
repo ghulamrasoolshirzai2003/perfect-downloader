@@ -12,6 +12,7 @@ export interface ExecuteDownloadOptions {
   url: string;
   formatId: string;
   attestation?: boolean;
+  title?: string;
   targetFormat?: string;
   runtimeContext: PlatformRuntimeContext;
   tempManager: TempStorageManager;
@@ -26,7 +27,7 @@ export interface ExecuteDownloadResult {
 }
 
 export async function executeDownload(opts: ExecuteDownloadOptions): Promise<ExecuteDownloadResult> {
-  const { url: rawUrl, formatId, attestation, targetFormat, runtimeContext, tempManager, onProgress, signal } = opts;
+  const { url: rawUrl, formatId, title, attestation, targetFormat, runtimeContext, tempManager, onProgress, signal } = opts;
 
   const detection = detectPlatform(rawUrl);
   const platform = detection.platform;
@@ -59,18 +60,39 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
   // Allocate temporary output destination
   const downloadTemp = await tempManager.createTempFile({
     prefix: 'dl',
-    extension: targetFormat || 'tmp',
+    extension: targetFormat === 'mp3' ? 'm4a' : (targetFormat || 'mp4'),
   });
+
+  const effectiveFormat = (formatId === 'best' || formatId.includes('+') || formatId.includes('/') || targetFormat === 'mp3')
+    ? (targetFormat === 'mp3' ? 'bestaudio/best' : formatId)
+    : `${formatId}+bestaudio/best`;
 
   try {
     await runYtDlpDownload({
       url: safeUrl.toString(),
-      formatId,
+      formatId: effectiveFormat,
       outputPath: downloadTemp.path,
       extractors: platform.extractors,
       onProgress,
       signal,
     });
+
+    const fsPromises = (await import('node:fs')).promises;
+    const pathMod = await import('node:path');
+    let realPath = downloadTemp.path;
+    try {
+      await fsPromises.stat(realPath);
+    } catch {
+      // yt-dlp might have saved with container extension e.g. .mp4, .webm, or .mkv
+      const dir = pathMod.dirname(downloadTemp.path);
+      const base = pathMod.basename(downloadTemp.path);
+      const entries = await fsPromises.readdir(dir);
+      const found = entries.find((e) => e.startsWith(base));
+      if (found) {
+        realPath = pathMod.join(dir, found);
+        downloadTemp.path = realPath;
+      }
+    }
 
     let finalFile = downloadTemp;
     let finalExt = targetFormat || 'mp4';
@@ -89,9 +111,11 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
       mimeType = 'audio/mpeg';
     }
 
+    const cleanTitle = (title ? title.replace(/[/\\?%*:|"<>]/g, '_').trim().slice(0, 100) : 'media') || 'download';
+
     return {
       file: finalFile,
-      fileName: `download.${finalExt}`,
+      fileName: `${cleanTitle}.${finalExt}`,
       mimeType,
     };
   } catch (err) {
@@ -99,3 +123,4 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
     throw err;
   }
 }
+

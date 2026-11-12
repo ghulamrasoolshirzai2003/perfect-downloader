@@ -165,7 +165,7 @@ export async function buildServer(): Promise<{ app: FastifyInstance; close: () =
       throw new AppError('INVALID_OPTIONS', parsed.error.issues[0]?.message || 'Invalid request body');
     }
 
-    const { url, formatId, attestation, targetFormat } = parsed.data;
+    const { url, formatId, attestation, targetFormat, title } = parsed.data;
 
     // Create async job
     const jobRecord = jobStore.createJob('download');
@@ -179,6 +179,7 @@ export async function buildServer(): Promise<{ app: FastifyInstance; close: () =
         const result = await executeDownload({
           url,
           formatId,
+          title,
           attestation,
           targetFormat,
           runtimeContext,

@@ -73,8 +73,11 @@ export const DownloadRequestSchema = z.object({
   attestation: z.boolean().optional(),
   /** Optional conversion to run after download (e.g. convert to mp3, mp4, etc.) */
   targetFormat: z.string().max(16).optional(),
+  /** Optional media title for nice filename output */
+  title: z.string().max(256).optional(),
 });
 export type DownloadRequest = z.infer<typeof DownloadRequestSchema>;
+
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'expired';
 
