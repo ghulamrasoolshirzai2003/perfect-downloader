@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Fastify-based REST API for Perfect Downloader with OpenAPI, streaming, rate limiting, and temporary file management.",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsup src/server.ts --format esm --out-dir dist",
-    "start": "node dist/server.js",
+    "dev": "tsx watch src/start.ts",
+    "build": "tsup src/start.ts --format esm --out-dir dist",
+    "start": "tsx src/start.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
