@@ -12,6 +12,7 @@ export default function HomePage() {
 
   return (
     <>
+      <div id="nt" />
       <header>
         <div className="w nb">
           <a className="logo" href="#home">
@@ -19,12 +20,6 @@ export default function HomePage() {
             Perfect
           </a>
           <nav className="nl" id="nl" aria-label="Main" />
-          <a className="tl" href="#help">
-            Sign in
-          </a>
-          <a className="btn k" href="#download">
-            Get started
-          </a>
           <button className="ib" id="th" aria-label="Toggle theme" />
           <button className="ib menu" id="mn" aria-label="Menu" />
         </div>

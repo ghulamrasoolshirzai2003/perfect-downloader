@@ -2,9 +2,10 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Perfect — Every file. Every format. One platform.',
+  title: 'Perfect | Free media downloader',
   description:
-    'Download from the web, then convert, compress, trim and merge video, audio, images and PDFs — all in one fast, private workspace.',
+    'Download any video. Paste a link from any of 31 sites, choose your quality and save the file. It is free and needs no account.',
+
   icons: {
     icon: '/icon.svg',
   },
