@@ -68,13 +68,13 @@ export interface InspectResponse {
 
 export const DownloadRequestSchema = z.object({
   url: z.string().min(1).max(2048),
-  formatId: z.string().min(1).max(128),
+  formatId: z.string().min(1).max(512),
   /** If the platform is restricted, the user must explicitly attest they own or have permission */
   attestation: z.boolean().optional(),
   /** Optional conversion to run after download (e.g. convert to mp3, mp4, etc.) */
   targetFormat: z.string().max(16).optional(),
   /** Optional media title for nice filename output */
-  title: z.string().max(256).optional(),
+  title: z.string().max(1024).optional(),
   clipStart: z.string().max(32).optional(),
   clipEnd: z.string().max(32).optional(),
 });

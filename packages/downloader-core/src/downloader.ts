@@ -7,6 +7,8 @@ import {
 import { TempStorageManager, type ManagedTempFile, runFFmpeg } from '@pd/media-core';
 import { validateUrlSsrfSafe } from './ssrf-guard';
 import { runYtDlpDownload, type YtDlpDownloadProgress } from './ytdlp-runner';
+import { extractWithFallback, hasFallbackAdapter } from './fallback-extractors';
+import { safeDownloadToFile } from './http-safe';
 
 export interface ExecuteDownloadOptions {
   url: string;
@@ -60,7 +62,7 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
   const { safeUrl } = await validateUrlSsrfSafe(detection.url);
 
   // Allocate temporary output destination
-  const downloadTemp = await tempManager.createTempFile({
+  let downloadTemp = await tempManager.createTempFile({
     prefix: 'dl',
     extension: targetFormat === 'mp3' ? 'm4a' : (targetFormat || 'mp4'),
   });
@@ -69,15 +71,94 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
     ? (targetFormat === 'mp3' ? 'bestaudio/best' : formatId)
     : `${formatId}+bestaudio/${formatId}/best`;
 
+  const MIME_BY_EXT: Record<string, string> = {
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mkv: 'video/x-matroska',
+    mov: 'video/quicktime',
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    ogg: 'audio/ogg',
+    opus: 'audio/opus',
+    wav: 'audio/wav',
+    flac: 'audio/flac',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+  };
+
+  let fallbackPickedExt: string | undefined;
+
+  const runFallbackDownload = async () => {
+    const fb = await extractWithFallback(platform.id, safeUrl.toString(), signal);
+    if (!fb || fb.formats.length === 0) {
+      throw new AppError('CONTENT_UNAVAILABLE', `Unable to extract downloadable media from ${platform.name}`);
+    }
+    const picked =
+      fb.formats.find((f) => f.formatId === formatId) ||
+      (targetFormat === 'mp3'
+        ? fb.formats.find((f) => f.isAudioOnly) || fb.formats.find((f) => f.hasVideo) || fb.formats[0]
+        : fb.formats.find((f) => f.hasVideo) || fb.formats[0])!;
+
+    const ext = (picked.ext || 'mp4').toLowerCase();
+    fallbackPickedExt = ext;
+    const nextTemp = await tempManager.createTempFile({ prefix: 'dlfb', extension: ext });
+    await downloadTemp.cleanup().catch(() => {});
+    downloadTemp = nextTemp;
+
+    if (picked.isHls || /\.m3u8(?:$|\?)/i.test(picked.directUrl)) {
+      await validateUrlSsrfSafe(picked.directUrl);
+      onProgress?.({ percent: 25, stage: 'Downloading HLS stream' });
+      await runFFmpeg({
+        args: ['-y', '-i', picked.directUrl, '-c', 'copy', '-movflags', '+faststart', downloadTemp.path],
+        signal,
+      });
+      onProgress?.({ percent: 100, stage: 'Downloaded' });
+    } else {
+      onProgress?.({ percent: 10, stage: 'Downloading media stream' });
+      const dlRes = await safeDownloadToFile(picked.directUrl, downloadTemp.path, {
+        headers: picked.headers,
+        signal,
+      });
+      if (dlRes.contentType.includes('image/png')) fallbackPickedExt = 'png';
+      else if (dlRes.contentType.includes('image/webp')) fallbackPickedExt = 'webp';
+      else if (dlRes.contentType.includes('image/gif')) fallbackPickedExt = 'gif';
+      else if (dlRes.contentType.includes('image/jpeg')) fallbackPickedExt = 'jpg';
+      else if (dlRes.contentType.includes('audio/mpeg')) fallbackPickedExt = 'mp3';
+      onProgress?.({ percent: 100, stage: 'Downloaded' });
+    }
+  };
+
   try {
-    await runYtDlpDownload({
-      url: safeUrl.toString(),
-      formatId: effectiveFormat,
-      outputPath: downloadTemp.path,
-      extractors: platform.extractors,
-      onProgress,
-      signal,
-    });
+    const VIDEO_MERGE_CONTAINERS = new Set(['mp4', 'mkv', 'webm', 'ogg', 'flv', 'avi']);
+    const normTarget = targetFormat?.toLowerCase();
+    const mergeFormat = normTarget
+      ? (VIDEO_MERGE_CONTAINERS.has(normTarget) ? normTarget : undefined)
+      : 'mp4';
+
+    if (formatId.startsWith('fb:') || platform.extractors.length === 0) {
+      await runFallbackDownload();
+    } else {
+      try {
+        await runYtDlpDownload({
+          url: safeUrl.toString(),
+          formatId: effectiveFormat,
+          outputPath: downloadTemp.path,
+          extractors: platform.extractors,
+          mergeOutputFormat: mergeFormat,
+          onProgress,
+          signal,
+        });
+      } catch (ytErr) {
+        if (hasFallbackAdapter(platform.id)) {
+          await runFallbackDownload();
+        } else {
+          throw ytErr;
+        }
+      }
+    }
 
     const fsPromises = (await import('node:fs')).promises;
     const pathMod = await import('node:path');
@@ -96,12 +177,15 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
       }
     }
 
-    let finalFile = downloadTemp;
-    let finalExt = targetFormat || 'mp4';
-    let mimeType = 'video/mp4';
+    const detectedExt = fallbackPickedExt || pathMod.extname(realPath).slice(1).toLowerCase();
+    const isImageFile = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(detectedExt);
 
-    // If conversion requested (e.g. download as MP3)
-    if (targetFormat && targetFormat === 'mp3') {
+    let finalFile = downloadTemp;
+    let finalExt = detectedExt || targetFormat || 'mp4';
+    let mimeType = MIME_BY_EXT[finalExt] || 'application/octet-stream';
+
+    // If conversion requested (e.g. download as MP3) and input is audio/video (not already mp3 or an image)
+    if (targetFormat && targetFormat === 'mp3' && !isImageFile && finalExt !== 'mp3') {
       const convertedTemp = await tempManager.createTempFile({ prefix: 'conv', extension: 'mp3' });
       await runFFmpeg({
         args: ['-i', downloadTemp.path, '-vn', '-c:a', 'libmp3lame', '-b:a', '192k', convertedTemp.path],

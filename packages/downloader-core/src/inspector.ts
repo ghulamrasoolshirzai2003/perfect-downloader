@@ -9,6 +9,11 @@ import {
 } from '@pd/shared';
 import { validateUrlSsrfSafe } from './ssrf-guard';
 import { runYtDlpInspect } from './ytdlp-runner';
+import {
+  extractWithFallback,
+  hasFallbackAdapter,
+  toPublicMediaFormats,
+} from './fallback-extractors';
 
 export interface InspectUrlOptions {
   url: string;
@@ -53,12 +58,58 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
   // 3. SSRF & DNS rebinding protection
   const { safeUrl } = await validateUrlSsrfSafe(detection.url);
 
-  // 4. Run extractor inspection
-  const rawMeta = await runYtDlpInspect({
-    url: safeUrl.toString(),
-    extractors: platform.extractors,
-    signal,
-  });
+  const buildFallbackResult = async () => {
+    const fb = await extractWithFallback(platform.id, safeUrl.toString(), signal);
+    if (!fb || fb.formats.length === 0) return null;
+    const formats = toPublicMediaFormats(fb.formats);
+    const bestVideo = formats.find((f) => f.hasVideo) || formats[0];
+    const bestAudio = formats.find((f) => f.isAudioOnly) || formats.find((f) => f.hasAudio);
+    return {
+      url: rawUrl,
+      canonicalUrl: fb.canonicalUrl || safeUrl.toString(),
+      platform: {
+        id: platform.id,
+        name: platform.name,
+        category: platform.category,
+        status: effectiveStatus,
+        policy: platform.policy,
+        requiresAttestation: platform.policy === 'restricted',
+      },
+      title: fb.title || 'Media File',
+      description: fb.description ? fb.description.slice(0, 500) : undefined,
+      duration: fb.duration,
+      thumbnail: fb.thumbnail,
+      uploader: fb.uploader,
+      uploaderUrl: fb.uploaderUrl,
+      formats,
+      subtitles: [],
+      bestVideo,
+      bestAudio,
+      inspectedAt: new Date().toISOString(),
+    } satisfies InspectResult;
+  };
+
+  // 4. Run extractor inspection (or fallback when no yt-dlp extractors or yt-dlp fails)
+  if (platform.extractors.length === 0 && hasFallbackAdapter(platform.id)) {
+    const fbResult = await buildFallbackResult();
+    if (fbResult) return fbResult;
+    throw new AppError('CONTENT_UNAVAILABLE', `Could not extract media from ${platform.name}`);
+  }
+
+  let rawMeta: any;
+  try {
+    rawMeta = await runYtDlpInspect({
+      url: safeUrl.toString(),
+      extractors: platform.extractors,
+      signal,
+    });
+  } catch (ytErr) {
+    if (hasFallbackAdapter(platform.id)) {
+      const fbResult = await buildFallbackResult();
+      if (fbResult) return fbResult;
+    }
+    throw ytErr;
+  }
 
   // 5. Parse and normalize formats
   const rawFormats: any[] = Array.isArray(rawMeta.formats) ? rawMeta.formats : [];
@@ -67,20 +118,40 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
 
   for (const f of rawFormats) {
     if (!f.format_id) continue;
+    if (
+      f.ext === 'mhtml' ||
+      f.vcodec === 'images' ||
+      /^sb\d+$/i.test(String(f.format_id)) ||
+      /scrubber/i.test(String(f.format_id)) ||
+      /storyboard/i.test(String(f.format_note || ''))
+    ) {
+      continue;
+    }
 
     const protocol = f.protocol || '';
     const vcodec = f.vcodec && f.vcodec !== 'none' ? f.vcodec : undefined;
     const acodec = f.acodec && f.acodec !== 'none' ? f.acodec : undefined;
     const ext = (f.ext || '').toLowerCase();
+    const normExt = ext === 'jpeg' ? 'jpg' : ext;
     const isAudioExt = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'opus'].includes(ext);
     const isVideoExt = ['mp4', 'webm', 'mkv', 'mov', 'avi', 'flv', 'ogv'].includes(ext);
+    const isImageExt = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'].includes(ext);
 
-    let hasVideo = Boolean(vcodec) || (Boolean(f.height) && f.height > 0) || isVideoExt;
-    let hasAudio = Boolean(acodec) || isAudioExt;
+    const isMusicPlatform = !platform.mediaTypes.includes('video');
+    const isExplicitAudioNote =
+      f.vcodec === 'none' ||
+      String(f.resolution || '').toLowerCase() === 'audio only' ||
+      /audio[_-]?only/i.test(String(f.format_id)) ||
+      /audio[_-]?only/i.test(String(f.format_note || ''));
+    let hasVideo = !isImageExt && !isExplicitAudioNote && (Boolean(vcodec) || (Boolean(f.height) && f.height > 0) || (isVideoExt && !isMusicPlatform));
+    let hasAudio = !isImageExt && (Boolean(acodec) || isAudioExt || isMusicPlatform || isExplicitAudioNote);
 
     // If codecs are unknown but container is recognized
     if (!vcodec && !acodec) {
-      if (isAudioExt) {
+      if (isImageExt) {
+        hasVideo = false;
+        hasAudio = false;
+      } else if (isAudioExt || isMusicPlatform || isExplicitAudioNote) {
         hasVideo = false;
         hasAudio = true;
       } else {
@@ -89,17 +160,19 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
       }
     }
 
-    if (!hasVideo && !hasAudio) continue;
+    if (!hasVideo && !hasAudio && !isImageExt) continue;
 
     const height = f.height ? Number(f.height) : undefined;
     const width = f.width ? Number(f.width) : undefined;
     const fps = f.fps ? Number(f.fps) : undefined;
 
     let qualityLabel = '';
-    if (height) qualityLabel = `${height}p${fps && fps > 30 ? fps : ''}`;
+    if (isImageExt) {
+      qualityLabel = width && height ? `${width}x${height} ${normExt.toUpperCase()}` : `Original ${normExt.toUpperCase()}`;
+    } else if (height) qualityLabel = `${height}p${fps && fps > 30 ? fps : ''}`;
     else if (f.format_note) qualityLabel = f.format_note;
     else if (hasAudio && !hasVideo) qualityLabel = `${f.abr || 128} kbps`;
-    else qualityLabel = ext.toUpperCase();
+    else qualityLabel = normExt.toUpperCase();
 
     // Deduplicate duplicate resolution representations (prefer mp4 over webm for mainstream compatibility)
     const isAudioOnly = !hasVideo && hasAudio;
@@ -108,9 +181,15 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
     // If video-only, formatId should merge with best audio on download
     const effectiveFormatId = isVideoOnly ? `${f.format_id}+bestaudio/best` : String(f.format_id);
 
+    const outExt = isImageExt
+      ? normExt
+      : isAudioOnly
+        ? (normExt || 'm4a')
+        : (!isVideoOnly && normExt === 'webm' ? 'webm' : 'mp4');
+
     normalizedFormats.push({
       formatId: effectiveFormatId,
-      ext: isAudioOnly ? (ext || 'm4a') : 'mp4',
+      ext: outExt,
       resolution: f.resolution || (height && width ? `${width}x${height}` : undefined),
       width,
       height,
@@ -131,22 +210,29 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
   // Fallback: If no sub-formats returned, use root media info
   if (normalizedFormats.length === 0) {
     const ext = (rawMeta.ext || 'mp4').toLowerCase();
+    const normExt = ext === 'jpeg' ? 'jpg' : ext;
     const isAudio = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg'].includes(ext);
+    const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'].includes(ext);
     normalizedFormats.push({
       formatId: rawMeta.format_id ? String(rawMeta.format_id) : 'best',
-      ext: isAudio ? ext : 'mp4',
+      ext: isImage ? normExt : isAudio ? normExt : (normExt === 'webm' ? 'webm' : 'mp4'),
       resolution: rawMeta.resolution || (rawMeta.height ? `${rawMeta.width}x${rawMeta.height}` : undefined),
       width: rawMeta.width,
       height: rawMeta.height,
       filesize: rawMeta.filesize ? Number(rawMeta.filesize) : undefined,
       filesizeApprox: rawMeta.filesize_approx ? Number(rawMeta.filesize_approx) : undefined,
-      qualityLabel: rawMeta.height ? `${rawMeta.height}p` : (isAudio ? 'Audio' : 'Standard'),
-      hasVideo: !isAudio,
-      hasAudio: true,
+      qualityLabel: isImage ? `Original ${normExt.toUpperCase()}` : rawMeta.height ? `${rawMeta.height}p` : (isAudio ? 'Audio' : 'Standard'),
+      hasVideo: !isAudio && !isImage,
+      hasAudio: !isImage,
       isAudioOnly: isAudio,
       isVideoOnly: false,
-      protocol: rawMeta.protocol || 'https',
+    protocol: rawMeta.protocol || 'https',
     });
+  }
+
+  if (normalizedFormats.length === 0 && hasFallbackAdapter(platform.id)) {
+    const fbResult = await buildFallbackResult();
+    if (fbResult) return fbResult;
   }
 
   // Sort formats: highest resolution first, then audio

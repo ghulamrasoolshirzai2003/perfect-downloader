@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeUrl, detectPlatform, AppError, isIpLiteral } from '@pd/shared';
+import { normalizeUrl, detectPlatform, AppError, isIpLiteral, DownloadRequestSchema } from '@pd/shared';
 import { isPrivateOrReservedIp, validateUrlSsrfSafe } from '@pd/downloader-core';
 
 describe('URL Normalization and Detection', () => {
@@ -44,6 +44,31 @@ describe('URL Normalization and Detection', () => {
     const r3 = detectPlatform('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
     expect(r3.platform?.id).toBe('youtube');
     expect(r3.platform?.policy).toBe('restricted');
+
+    expect(detectPlatform('https://freemusicarchive.org/music/Broke_For_Free/Directionless_EP/Night_Owl/').platform?.id).toBe('freemusicarchive');
+    expect(detectPlatform('https://video.blender.org/w/4zVdRZG3PTkESq1emx1Pxi').platform?.id).toBe('peertube');
+    expect(detectPlatform('https://www.flickr.com/photos/scottspencer2012/55649328537/').platform?.id).toBe('flickr');
+    expect(detectPlatform('https://imgur.com/A61SaA1').platform?.id).toBe('imgur');
+    expect(detectPlatform('https://t.me/europa_press/613').platform?.id).toBe('telegram');
+  });
+
+  it('accepts long social captions (>256 up to 1024 chars) and fallback formatIds in DownloadRequestSchema', () => {
+    const parsed = DownloadRequestSchema.parse({
+      url: 'https://x.com/user/status/123',
+      formatId: 'fb:v0',
+      title: 'A'.repeat(400),
+      targetFormat: 'mp4',
+      attestation: true,
+    });
+    expect(parsed.title?.length).toBe(400);
+
+    expect(() =>
+      DownloadRequestSchema.parse({
+        url: 'https://x.com/user/status/123',
+        formatId: 'x'.repeat(600),
+        title: 'ok',
+      }),
+    ).toThrow();
   });
 });
 

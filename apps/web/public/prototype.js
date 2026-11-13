@@ -24,51 +24,90 @@ const PL=[['YouTube',0,'Videos, Shorts, audio','youtube.com,youtu.be'],['TikTok'
 ['Internet Archive',3,'Video, audio, texts','archive.org'],['Wikimedia Commons',3,'Media files','commons.wikimedia.org'],['PeerTube',3,'Videos','peertube.tv'],
 ['Imgur',4,'Images, GIFs','imgur.com'],['Flickr',4,'Public photos','flickr.com'],['Telegram',5,'Public channel media','t.me']].map(p=>({n:p[0],c:p[1],t:p[2],h:p[3].split(','),s:p[0].toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}));
 const kindOf=p=>p.c===2?'a':p.c===4?'i':'v';
+const effectiveKind=p=>{
+  const fmts=an.realData&&an.realData.formats;
+  if(fmts&&fmts.length>0){
+    if(fmts.some(f=>f.hasVideo))return 'v';
+    if(fmts.every(f=>f.isAudioOnly))return 'a';
+    return 'i';
+  }
+  return kindOf(p);
+};
 let pcat='All',pq='',pending=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30'};
-const $=s=>document.querySelector(s),esc=s=>{if(s==null)return'';if(typeof s==='object')return String(s.message||s.code||JSON.stringify(s)).replace(/[<&]/g,'');return String(s).replace(/[<&]/g,'');};
+const $=s=>document.querySelector(s),esc=s=>{if(s==null)return'';const str=typeof s==='object'?String(s.message||s.code||JSON.stringify(s)):String(s);return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');};
 const toast=m=>{const t=$('#toast');t.innerHTML=I('check')+m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('on'),2200)};
 const seed=u=>[...u].reduce((a,c)=>a+c.charCodeAt(0),0);
+const fmtSize=(bytes,fallback)=>{if(!bytes||bytes<=0)return fallback;if(bytes<1024*1024)return `${Math.max(1,Math.round(bytes/1024))} KB`;return `${(bytes/(1024*1024)).toFixed(bytes<10*1024*1024?1:0)} MB`;};
 
 function optsFor(){
-  if (an.realData && an.realData.formats && an.realData.formats.length > 0) {
-    const k = kindOf(an.p);
+  const fmts = an.realData && an.realData.formats;
+  if (fmts && fmts.length > 0) {
+    const k = effectiveKind(an.p);
+    if (k === 'i') {
+      return fmts.map((f, idx) => {
+        const ext = (f.ext || 'jpg').toLowerCase();
+        const sz = fmtSize(f.filesize || f.filesizeApprox, 'Image');
+        return [f.qualityLabel || `Original ${ext.toUpperCase()}`, sz, idx === 0 ? 1 : 0, f.formatId, ext];
+      });
+    }
     const isAudioTab = (an.tab === 'a' || k === 'a');
     if (isAudioTab) {
       const dur = an.realData.duration || 180;
       const sz320 = Math.max(1, Math.round(dur * 320 / (8 * 1024)));
       const sz192 = Math.max(1, Math.round(dur * 192 / (8 * 1024)));
       const sz128 = Math.max(1, Math.round(dur * 128 / (8 * 1024)));
+      const usesFallback = fmts.every(f => String(f.formatId).startsWith('fb:'));
+      const bestAudio = fmts.find(f => f.isAudioOnly) || fmts.find(f => f.hasAudio) || fmts[0];
+      const origExt = (bestAudio && bestAudio.ext ? bestAudio.ext : 'm4a').toLowerCase();
+      if (usesFallback && bestAudio) {
+        const opts = [['MP3 192 kbps', fmtSize(bestAudio.filesize || bestAudio.filesizeApprox, `${sz192} MB`), 1, bestAudio.formatId, 'mp3']];
+        if (origExt !== 'mp4' && origExt !== 'mp3') {
+          opts.push([`Original ${origExt.toUpperCase()}`, fmtSize(bestAudio.filesize || bestAudio.filesizeApprox, `${sz128} MB`), 0, bestAudio.formatId, origExt]);
+        }
+        return opts;
+      }
+      const origAudioId = (bestAudio && bestAudio.isAudioOnly) ? bestAudio.formatId : 'bestaudio/best';
+      const origAudioExt = (bestAudio && bestAudio.isAudioOnly && bestAudio.ext) ? bestAudio.ext.toLowerCase() : 'm4a';
       return [
         ['MP3 320 kbps', `${sz320} MB`, 1, 'bestaudio/best', 'mp3'],
         ['MP3 192 kbps', `${sz192} MB`, 0, 'bestaudio/best', 'mp3'],
-        ['Original M4A', `${sz128} MB`, 0, 'bestaudio/best', 'm4a']
+        [`Original ${origAudioExt.toUpperCase()}`, fmtSize(bestAudio && bestAudio.filesize, `${sz128} MB`), 0, origAudioId, origAudioExt]
       ];
     } else {
-      // Video options
-      const videoFormats = an.realData.formats.filter(f => f.hasVideo && f.height);
-      const heights = [...new Set(videoFormats.map(f => f.height))].sort((a,b) => b - a);
-      const targets = [
-        { label: '1080p MP4', h: 1080 },
-        { label: '720p MP4', h: 720 },
-        { label: '480p MP4', h: 480 },
-        { label: '360p MP4', h: 360 }
-      ];
-      const available = targets.filter(t => heights.length === 0 || heights.some(h => h >= t.h - 40));
-      const list = available.length > 0 ? available : targets.slice(-2);
-      return list.map((t, idx) => {
-        const matchingFmt = videoFormats.find(f => Math.abs(f.height - t.h) <= 40) || videoFormats[0];
-        let szStr = 'Stream';
-        if (matchingFmt && (matchingFmt.filesize || matchingFmt.filesizeApprox)) {
-          const szBytes = matchingFmt.filesize || matchingFmt.filesizeApprox;
-          szStr = `${Math.round(szBytes / (1024 * 1024))} MB`;
-        } else if (an.realData.duration) {
-          const bitrates = { 1080: 4500, 720: 2500, 480: 1200, 360: 700 };
-          const br = bitrates[t.h] || 2000;
-          const est = Math.round((an.realData.duration * br) / (8 * 1024));
-          szStr = `${Math.max(1, est)} MB`;
+      const videoFormats = fmts.filter(f => f.hasVideo);
+      const tierOf = f => (f.width && f.height ? Math.min(f.width, f.height) : (f.height || 0));
+      const dedup = [];
+      const seenTiers = new Set();
+      const sorted = [...videoFormats].sort((a, b) => {
+        const diff = tierOf(b) - tierOf(a);
+        if (diff !== 0) return diff;
+        if (a.ext === 'mp4' && b.ext !== 'mp4') return -1;
+        if (b.ext === 'mp4' && a.ext !== 'mp4') return 1;
+        if (!a.isVideoOnly && b.isVideoOnly) return -1;
+        if (a.isVideoOnly && !b.isVideoOnly) return 1;
+        return 0;
+      });
+      for (const f of sorted) {
+        const t = tierOf(f);
+        const key = t > 0 ? `h:${t}` : `id:${f.formatId}`;
+        if (seenTiers.has(key)) continue;
+        seenTiers.add(key);
+        dedup.push(f);
+        if (dedup.length >= 4) break;
+      }
+      return dedup.map((f, idx) => {
+        const outExt = (f.ext && f.ext !== 'webm') ? f.ext.toLowerCase() : (!f.isVideoOnly && f.ext === 'webm' ? 'webm' : 'mp4');
+        const t = tierOf(f);
+        const label = f.qualityLabel && !/^\d+$/.test(f.qualityLabel)
+          ? (f.qualityLabel.toUpperCase().includes(outExt.toUpperCase()) ? f.qualityLabel : `${f.qualityLabel} ${outExt.toUpperCase()}`)
+          : (t > 0 ? `${t}p ${outExt.toUpperCase()}` : `HD ${outExt.toUpperCase()}`);
+        let szStr = fmtSize(f.filesize || f.filesizeApprox, '');
+        if (!szStr && an.realData.duration) {
+          const bitrates = { 2160: 12000, 1440: 8000, 1080: 4500, 720: 2500, 480: 1200, 360: 700, 240: 400 };
+          const br = bitrates[t] || 2000;
+          szStr = `${Math.max(1, Math.round((an.realData.duration * br) / (8 * 1024)))} MB`;
         }
-        const fmtId = `bestvideo[height<=${t.h}]+bestaudio/best[height<=${t.h}]/best`;
-        return [t.label, szStr, idx === 0 ? 1 : 0, fmtId, 'mp4'];
+        return [label, szStr || 'Stream', idx === 0 ? 1 : 0, f.formatId, outExt];
       });
     }
   }
@@ -84,7 +123,7 @@ function paint(){
   if(s==='load')return r.innerHTML=`<div class="rc"><div class="rrow"><div class="sk thm" style="height:76px"></div><div style="flex:1;width:100%;display:grid;gap:8px"><div class="sk" style="height:16px;width:65%"></div><div class="sk" style="height:12px;width:35%"></div></div></div><div class="sk" style="height:170px;margin-top:18px"></div></div>`;
   if(s==='err')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">${esc(an.errMsg||'That doesn’t look like a link')}</b><p style="color:var(--mut);font-size:14px;margin-top:2px">${esc(an.errDetail||'Paste a full address beginning with https://')}</p><button class="btn" id="again-err" style="margin-top:14px">Try another link</button></div>`;
   if(s==='uns')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">This site isn’t supported yet</b><p style="color:var(--mut);font-size:14px;margin-top:2px">See the <a href="#platforms" style="color:var(--ac)">full list of supported platforms</a>.</p></div>`;
-  const p=an.p,k=kindOf(p);
+  const p=an.p,k=effectiveKind(p);
   if(s==='done'){
     const fn = an.outputFileName || 'media-download';
     const dlLink = an.downloadUrl || '#';
@@ -97,7 +136,7 @@ function paint(){
     ? `<div class="thm" style="overflow:hidden;padding:0"><img src="${an.thumbnail}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:10px"></div>` 
     : `<div class="thm">${I(k==='a'?'audio':k==='i'?'image':'play',26)}</div>`;
   const titleText = an.title || `Sample ${k==='a'?'track':k==='i'?'image':'video'} title`;
-  const durText = an.dur || dur;
+  const durText = an.realData ? (an.dur || (k==='i'?'Image':'Media')) : (an.dur || dur);
 
   r.innerHTML=`<div class="rc"><div class="rrow">${thmHtml}<div><div class="det">${lg(p,22)}${p.n} detected</div><b>${esc(titleText)}</b><small>${k==='i'?'Image':durText}${an.uploader ? ' • ' + esc(an.uploader) : ''}</small></div></div>
   ${k==='v'?`<div class="seg" role="tablist"><button class="${an.tab==='v'?'on':''}" data-t="v">Video</button><button class="${an.tab==='a'?'on':''}" data-t="a">Audio only</button></div>`:'<div style="height:16px"></div>'}
@@ -121,6 +160,7 @@ function paint(){
     const formatId = chosen[3] || 'best';
     const isAudio = (an.tab === 'a' || k === 'a');
     const targetFormat = chosen[4] || (isAudio ? 'mp3' : undefined);
+    const cleanTitle = String(an.title || 'media').replace(/\s+/g, ' ').trim().slice(0, 200) || 'media';
 
     fetch('/api/v1/download', {
       method: 'POST',
@@ -128,10 +168,10 @@ function paint(){
       body: JSON.stringify({
         url: an.url,
         formatId,
-        title: an.title || 'media',
+        title: cleanTitle,
         targetFormat,
-        clipStart: an.clip ? an.a : undefined,
-        clipEnd: an.clip ? an.b : undefined,
+        clipStart: (an.clip && k !== 'i' && an.a) ? an.a.trim() : undefined,
+        clipEnd: (an.clip && k !== 'i' && an.b) ? an.b.trim() : undefined,
         attestation: true
       })
     })
@@ -212,7 +252,7 @@ function analyse(){
     // Fallback platform object for any supported web URL
     p = { n: u.hostname.replace(/^www\./i, ''), c: 1, t: 'Media', h: [u.hostname], s: 'media' };
   }
-  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.st='load';an.realData=null;an.errMsg='';an.errDetail='';paint();
+  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.st='load';an.realData=null;an.title='';an.thumbnail='';an.uploader='';an.dur='';an.errMsg='';an.errDetail='';paint();
 
   // Connect to real backend /api/v1/inspect
   fetch('/api/v1/inspect', {
@@ -233,6 +273,7 @@ function analyse(){
         const sec = Math.floor(body.data.duration);
         an.dur = `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
       }
+      if (effectiveKind(an.p) === 'a') an.tab = 'a';
       paint();
     } else {
       an.st = 'err';

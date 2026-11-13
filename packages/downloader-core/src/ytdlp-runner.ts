@@ -20,6 +20,7 @@ export interface YtDlpDownloadOptions {
   formatId: string;
   outputPath: string;
   extractors: string[];
+  mergeOutputFormat?: string;
   maxFileSizeMb?: number;
   onProgress?: (progress: YtDlpDownloadProgress) => void;
   timeoutMs?: number;
@@ -126,7 +127,7 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
  * Runs yt-dlp to download a specific format into a designated temporary file path
  */
 export async function runYtDlpDownload(opts: YtDlpDownloadOptions): Promise<void> {
-  const { url, formatId, outputPath, extractors, maxFileSizeMb = 500, onProgress, timeoutMs = 300_000, signal } = opts;
+  const { url, formatId, outputPath, extractors, mergeOutputFormat, maxFileSizeMb = 500, onProgress, timeoutMs = 300_000, signal } = opts;
 
   return new Promise<void>((resolve, reject) => {
     const args = [
@@ -146,6 +147,10 @@ export async function runYtDlpDownload(opts: YtDlpDownloadOptions): Promise<void
       '-f', formatId,
       '-o', outputPath,
     ];
+
+    if (mergeOutputFormat) {
+      args.push('--merge-output-format', mergeOutputFormat);
+    }
 
     if (extractors.length > 0) {
       args.push('--use-extractors', extractors.join(','));

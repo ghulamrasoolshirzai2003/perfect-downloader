@@ -98,15 +98,15 @@ export const PLATFORMS: PlatformDefinition[] = [
     id: 'wikimedia',
     name: 'Wikimedia Commons',
     category: 'archive',
-    domains: ['commons.wikimedia.org'],
+    domains: ['commons.wikimedia.org', 'upload.wikimedia.org'],
     adapter: 'ytdlp',
     extractors: ['wikimedia.org'],
-    mediaTypes: ['video', 'audio', 'subtitles', 'thumbnail'],
+    mediaTypes: ['video', 'audio', 'image', 'subtitles', 'thumbnail'],
     operations: VIDEO_OPS,
     auth: 'none',
     policy: 'open',
     baseStatus: 'available',
-    limitations: ['Only individual File: pages are supported, not categories.'],
+    limitations: ['Only individual File: pages or direct Wikimedia media URLs are supported, not categories.'],
     termsNote: 'Files are freely licensed. Attribution requirements on the file page still apply.',
     lastVerified: '2026-11-12',
     healthCheckUrl: 'https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm',
@@ -116,16 +116,16 @@ export const PLATFORMS: PlatformDefinition[] = [
     id: 'peertube',
     name: 'PeerTube',
     category: 'video',
-    domains: ['video.blender.org', 'framatube.org', 'tilvids.com', 'peertube.tv'],
+    domains: ['video.blender.org', 'framatube.org', 'tilvids.com', 'peertube.tv', 'peertube.social', 'spectra.video'],
     adapter: 'ytdlp',
-    extractors: ['PeerTube'],
+    extractors: ['PeerTube', 'PeerTube:Playlist'],
     mediaTypes: ['video', 'audio', 'subtitles', 'thumbnail'],
     operations: VIDEO_OPS,
     auth: 'none',
     policy: 'open',
-    baseStatus: 'limited',
+    baseStatus: 'available',
     limitations: [
-      'Only an allow-listed set of PeerTube instances is supported.',
+      'Supported on major open PeerTube instances (Blender Video, FramaTube, TILvids, PeerTube.tv).',
       'Instances and creators can disable downloads for a video.',
     ],
     termsNote: 'Each instance sets its own rules; many videos are Creative Commons licensed.',
@@ -134,7 +134,7 @@ export const PLATFORMS: PlatformDefinition[] = [
   },
 
   // ── Social networks (restricted: operator opt-in) ────────────────────────────────
-  ytdlpRestricted('youtube', 'YouTube', 'video', ['youtube.com', 'youtu.be', 'youtube-nocookie.com'], ['youtube', 'youtube:clip'], {
+  ytdlpRestricted('youtube', 'YouTube', 'video', ['youtube.com', 'youtu.be', 'youtube-nocookie.com'], ['youtube', 'youtube:clip', 'YoutubeYtBe', 'YoutubeLivestreamEmbed', 'youtube:tab'], {
     limitations: [
       'Requires a JavaScript runtime on the server for signature handling.',
       'Age-restricted, private and members-only videos are not supported.',
@@ -142,94 +142,94 @@ export const PLATFORMS: PlatformDefinition[] = [
     ],
     color: '#ef4444',
   }),
-  ytdlpRestricted('tiktok', 'TikTok', 'social', ['tiktok.com'], ['TikTok', 'vm.tiktok'], {
-    limitations: ['Private videos and photo slideshows are not supported.', 'Delivered files may contain the platform watermark.'],
+  ytdlpRestricted('tiktok', 'TikTok', 'social', ['tiktok.com'], ['TikTok', 'vm.tiktok', 'tiktok:user'], {
+    limitations: ['Private videos are not supported.'],
     color: '#14b8a6',
   }),
-  ytdlpRestricted('instagram', 'Instagram', 'social', ['instagram.com'], ['Instagram'], {
+  ytdlpRestricted('instagram', 'Instagram', 'social', ['instagram.com', 'instagr.am'], ['Instagram', 'InstagramIOS', 'instagram:story', 'instagram:tag'], {
     auth: 'sometimes',
-    limitations: ['Many posts require a logged-in session, which this service never uses.', 'Stories and private accounts are not supported.'],
+    limitations: ['Private accounts and some login-gated stories are not supported.'],
     color: '#ec4899',
   }),
-  ytdlpRestricted('facebook', 'Facebook', 'social', ['facebook.com', 'fb.watch'], ['facebook', 'facebook:reel'], {
+  ytdlpRestricted('facebook', 'Facebook', 'social', ['facebook.com', 'fb.watch', 'fb.com'], ['facebook', 'facebook:reel', 'facebook:ads', 'FacebookPluginsVideo', 'FacebookRedirectURL'], {
     auth: 'sometimes',
-    limitations: ['Only public videos and reels. Private groups and profiles are not supported.'],
+    limitations: ['Only public videos, reels, and photos. Private groups and profiles are not supported.'],
     color: '#2563eb',
   }),
-  ytdlpRestricted('x', 'X (Twitter)', 'social', ['x.com', 'twitter.com'], ['twitter'], {
+  ytdlpRestricted('x', 'X (Twitter)', 'social', ['x.com', 'twitter.com', 'fxtwitter.com', 'vxtwitter.com', 'fixupx.com'], ['twitter', 'twitter:card', 'twitter:amplify', 'twitter:broadcast', 'twitter:shortener'], {
     auth: 'sometimes',
-    limitations: ['Some posts require login and cannot be inspected.', 'Spaces and broadcasts are not supported.'],
+    limitations: ['Private or protected tweets cannot be downloaded.'],
     color: '#e5e7eb',
   }),
-  ytdlpRestricted('reddit', 'Reddit', 'social', ['reddit.com', 'redd.it'], ['Reddit'], {
-    limitations: ['Only hosted videos (v.redd.it). Image galleries are planned.'],
+  ytdlpRestricted('reddit', 'Reddit', 'social', ['reddit.com', 'redd.it', 'vxreddit.com', 'rxddit.com'], ['Reddit'], {
+    limitations: ['Only public posts, hosted videos (v.redd.it), GIFs, and images.'],
     color: '#f97316',
   }),
-  ytdlpRestricted('pinterest', 'Pinterest', 'social', ['pinterest.com', 'pin.it'], ['Pinterest'], {
-    limitations: ['Video pins only. Image pins are planned.'],
+  ytdlpRestricted('pinterest', 'Pinterest', 'social', ['pinterest.com', 'pin.it', 'pinterest.co.uk', 'pinterest.ca', 'pinterest.de', 'pinterest.fr', 'pinterest.jp', 'pinterest.es', 'pinterest.it', 'pinterest.com.au'], ['Pinterest', 'PinterestCollection'], {
+    limitations: ['Public video and image pins.'],
     color: '#dc2626',
   }),
   ytdlpRestricted('bluesky', 'Bluesky', 'social', ['bsky.app'], ['Bluesky'], {
-    limitations: ['Video posts only.'],
+    limitations: ['Public video and image posts.'],
     color: '#0ea5e9',
   }),
   ytdlpRestricted('tumblr', 'Tumblr', 'social', ['tumblr.com'], ['Tumblr'], {
-    limitations: ['Video posts only.'],
+    limitations: ['Public video, GIF, and image posts.'],
     color: '#6366f1',
   }),
-  ytdlpRestricted('linkedin', 'LinkedIn', 'social', ['linkedin.com'], ['LinkedIn'], {
+  ytdlpRestricted('linkedin', 'LinkedIn', 'social', ['linkedin.com'], ['LinkedIn', 'linkedin:events', 'linkedin:learning', 'linkedin:learning:course'], {
     baseStatus: 'limited',
     auth: 'sometimes',
-    limitations: ['Only public video posts. Most content requires login.'],
+    limitations: ['Only public posts, videos, and images. Login-walled content is unsupported.'],
     color: '#0a66c2',
   }),
-  ytdlpRestricted('vk', 'VK', 'social', ['vk.com', 'vkvideo.ru'], ['vk', 'vk:wallpost'], {
+  ytdlpRestricted('vk', 'VK', 'social', ['vk.com', 'vkvideo.ru', 'vk.ru'], ['vk', 'vk:wallpost', 'vk:uservideos'], {
     baseStatus: 'limited',
-    limitations: ['Availability varies by region.'],
+    limitations: ['Public videos and wall posts. Availability may vary by region.'],
     color: '#2787f5',
   }),
-  ytdlpRestricted('weibo', 'Weibo', 'social', ['weibo.com', 'weibo.cn'], ['Weibo', 'WeiboVideo'], {
+  ytdlpRestricted('weibo', 'Weibo', 'social', ['weibo.com', 'weibo.cn'], ['Weibo', 'WeiboVideo', 'WeiboUser'], {
     baseStatus: 'limited',
-    limitations: ['Availability varies by region.'],
+    limitations: ['Public videos and image posts. Availability may vary by region.'],
     color: '#e6162d',
   }),
   ytdlpRestricted('snapchat', 'Snapchat', 'social', ['snapchat.com'], ['SnapchatSpotlight'], {
     baseStatus: 'limited',
-    limitations: ['Public Spotlight videos only. Stories and chats are private and unsupported.'],
+    limitations: ['Public Spotlight videos and shared stories. Chats are private and unsupported.'],
     color: '#facc15',
   }),
   planned('threads', 'Threads', 'social', ['threads.net', 'threads.com'], 'No maintained open-source extractor is available yet.', '#a3a3a3'),
 
   // ── Video & streaming ────────────────────────────────────────────────────────────
-  ytdlpRestricted('vimeo', 'Vimeo', 'video', ['vimeo.com'], ['vimeo'], {
+  ytdlpRestricted('vimeo', 'Vimeo', 'video', ['vimeo.com', 'player.vimeo.com'], ['vimeo', 'vimeo:user', 'vimeo:channel', 'vimeo:album'], {
     limitations: ['Private, password-protected and on-demand videos are not supported.'],
     termsNote: 'Vimeo permits downloads only where the creator enabled them.',
     color: '#1ab7ea',
   }),
-  ytdlpRestricted('dailymotion', 'Dailymotion', 'video', ['dailymotion.com', 'dai.ly'], ['dailymotion'], {
+  ytdlpRestricted('dailymotion', 'Dailymotion', 'video', ['dailymotion.com', 'dai.ly'], ['dailymotion', 'dailymotion:playlist', 'dailymotion:user'], {
     color: '#0066dc',
   }),
-  ytdlpRestricted('twitch', 'Twitch', 'video', ['twitch.tv'], ['twitch:clips', 'twitch:vod'], {
+  ytdlpRestricted('twitch', 'Twitch', 'video', ['twitch.tv'], ['twitch:clips', 'twitch:vod', 'twitch:stream', 'twitch:videos', 'twitch:videos:clips', 'twitch:collection'], {
     limitations: ['Clips and past broadcasts only. Live streams are not supported.'],
     color: '#9146ff',
   }),
-  ytdlpRestricted('rumble', 'Rumble', 'video', ['rumble.com'], ['Rumble', 'RumbleEmbed'], { color: '#85c742' }),
-  ytdlpRestricted('bilibili', 'Bilibili', 'video', ['bilibili.com', 'b23.tv'], ['BiliBili'], {
+  ytdlpRestricted('rumble', 'Rumble', 'video', ['rumble.com'], ['Rumble', 'RumbleEmbed', 'RumbleChannel'], { color: '#85c742' }),
+  ytdlpRestricted('bilibili', 'Bilibili', 'video', ['bilibili.com', 'b23.tv'], ['BiliBili', 'BiliBiliBangumi', 'BiliBiliDynamic', 'BiliBiliPlayer', 'BilibiliAudio'], {
     baseStatus: 'limited',
     limitations: ['Higher qualities require a logged-in session and are not offered.'],
     color: '#00a1d6',
   }),
-  ytdlpRestricted('odysee', 'Odysee', 'video', ['odysee.com'], ['lbry'], { color: '#e50054' }),
-  ytdlpRestricted('likee', 'Likee', 'video', ['likee.video'], ['likee'], { baseStatus: 'limited', color: '#ff4f81' }),
+  ytdlpRestricted('odysee', 'Odysee', 'video', ['odysee.com'], ['lbry', 'lbry:channel', 'lbry:playlist'], { color: '#e50054' }),
+  ytdlpRestricted('likee', 'Likee', 'video', ['likee.video'], ['likee', 'likee:user'], { baseStatus: 'limited', color: '#ff4f81' }),
   ytdlpRestricted('streamable', 'Streamable', 'video', ['streamable.com'], ['Streamable'], { color: '#0f90fa' }),
   planned('triller', 'Triller', 'video', ['triller.co'], 'Adapter not yet verified.', '#ff0050'),
   planned('kuaishou', 'Kuaishou', 'video', ['kuaishou.com'], 'No maintained open-source extractor is available yet.', '#ff5000'),
   unavailable('dtube', 'DTube', 'video', ['d.tube'], 'The service is no longer operational.', '#ef4444'),
 
   // ── Messaging (private by design) ───────────────────────────────────────────────
-  ytdlpRestricted('telegram', 'Telegram', 'messaging', ['t.me'], ['telegram:embed'], {
-    baseStatus: 'limited',
-    mediaTypes: ['video', 'thumbnail'],
+  ytdlpRestricted('telegram', 'Telegram', 'messaging', ['t.me', 'telegram.me', 'telegram.dog'], ['telegram:embed'], {
+    baseStatus: 'available',
+    mediaTypes: ['video', 'image', 'thumbnail'],
     operations: ['inspect', 'download_video', 'download_thumbnail'],
     limitations: ['Public channel posts only. Private chats are never accessible.'],
     color: '#229ed9',
@@ -240,25 +240,42 @@ export const PLATFORMS: PlatformDefinition[] = [
   unavailable('wechat', 'WeChat', 'messaging', ['wechat.com', 'weixin.qq.com'], 'Messages are private; no public media pages exist.', '#07c160'),
 
   // ── Music ───────────────────────────────────────────────────────────────────────
-  ytdlpRestricted('soundcloud', 'SoundCloud', 'music', ['soundcloud.com'], ['soundcloud'], {
+  ytdlpRestricted('soundcloud', 'SoundCloud', 'music', ['soundcloud.com', 'on.soundcloud.com', 'm.soundcloud.com'], ['soundcloud', 'soundcloud:user', 'soundcloud:set'], {
     mediaTypes: ['audio', 'thumbnail'],
     operations: AUDIO_OPS,
-    limitations: ['Single tracks only. Go+ and private tracks are not supported.'],
+    limitations: ['Public tracks and playlists. Go+ and private tracks require authentication.'],
     termsNote: 'Downloads are permitted only for tracks where the artist enabled downloads.',
     color: '#ff5500',
   }),
-  ytdlpRestricted('bandcamp', 'Bandcamp', 'music', ['bandcamp.com'], ['Bandcamp'], {
+  ytdlpRestricted('bandcamp', 'Bandcamp', 'music', ['bandcamp.com'], ['Bandcamp', 'Bandcamp:album', 'Bandcamp:weekly'], {
     mediaTypes: ['audio', 'thumbnail'],
     operations: AUDIO_OPS,
     limitations: ['Only the public 128 kbps preview stream. Purchase on Bandcamp for full-quality files.'],
     termsNote: 'Support artists by purchasing or using official free-download links.',
     color: '#629aa9',
   }),
-  ytdlpRestricted('mixcloud', 'Mixcloud', 'music', ['mixcloud.com'], ['mixcloud'], {
+  ytdlpRestricted('mixcloud', 'Mixcloud', 'music', ['mixcloud.com'], ['mixcloud', 'mixcloud:playlist', 'mixcloud:user'], {
     mediaTypes: ['audio', 'thumbnail'],
     operations: AUDIO_OPS,
     color: '#5000ff',
   }),
+  {
+    id: 'freemusicarchive',
+    name: 'Free Music Archive',
+    category: 'music',
+    domains: ['freemusicarchive.org', 'files.freemusicarchive.org'],
+    adapter: 'ytdlp',
+    extractors: [],
+    mediaTypes: ['audio', 'thumbnail'],
+    operations: AUDIO_OPS,
+    auth: 'none',
+    policy: 'open',
+    baseStatus: 'available',
+    limitations: ['Public Creative Commons and free-to-download tracks from freemusicarchive.org.'],
+    termsNote: 'Tracks carry individual Creative Commons licences; credit the artist as required.',
+    lastVerified: '2026-11-13',
+    color: '#10b981',
+  },
   ytdlpRestricted('audiomack', 'Audiomack', 'music', ['audiomack.com'], ['audiomack'], {
     mediaTypes: ['audio', 'thumbnail'],
     operations: AUDIO_OPS,
@@ -266,19 +283,19 @@ export const PLATFORMS: PlatformDefinition[] = [
   }),
 
   // ── Image & creative ────────────────────────────────────────────────────────────
-  ytdlpRestricted('flickr', 'Flickr', 'image', ['flickr.com', 'flic.kr'], ['Flickr'], {
-    baseStatus: 'limited',
-    mediaTypes: ['video', 'thumbnail'],
+  ytdlpRestricted('flickr', 'Flickr', 'image', ['flickr.com', 'flic.kr', 'live.staticflickr.com'], ['Flickr'], {
+    baseStatus: 'available',
+    mediaTypes: ['video', 'image', 'thumbnail'],
     operations: ['inspect', 'download_video', 'download_thumbnail'],
-    limitations: ['Videos only. Photo downloads are planned.'],
+    limitations: ['Public photos and videos on Flickr.'],
     termsNote: 'Download rights depend on the owner settings and licence of each item.',
     color: '#ff0084',
   }),
-  ytdlpRestricted('imgur', 'Imgur', 'image', ['imgur.com'], ['Imgur'], {
-    baseStatus: 'limited',
-    mediaTypes: ['video', 'thumbnail'],
+  ytdlpRestricted('imgur', 'Imgur', 'image', ['imgur.com', 'i.imgur.com'], ['Imgur', 'imgur:album', 'imgur:gallery'], {
+    baseStatus: 'available',
+    mediaTypes: ['video', 'image', 'thumbnail'],
     operations: ['inspect', 'download_video', 'download_thumbnail'],
-    limitations: ['Single video/GIF posts only. Albums are planned.'],
+    limitations: ['Public single images, GIFV animations, videos, and gallery posts.'],
     color: '#1bb76e',
   }),
   planned('500px', '500px', 'image', ['500px.com'], 'Planned via an image-gallery adapter after licence review.', '#0099e5'),
