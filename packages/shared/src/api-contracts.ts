@@ -47,7 +47,10 @@ export interface InspectResult {
   thumbnail?: string;
   uploader?: string;
   uploaderUrl?: string;
+  channel?: string;
   uploadDate?: string;
+  viewCount?: number;
+  likeCount?: number;
   formats: MediaStreamFormat[];
   subtitles: SubtitleTrack[];
   bestVideo?: MediaStreamFormat;
