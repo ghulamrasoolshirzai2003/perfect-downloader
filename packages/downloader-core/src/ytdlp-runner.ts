@@ -30,7 +30,7 @@ export interface YtDlpDownloadOptions {
  * Runs `yt-dlp -J` safely to retrieve media metadata and format definitions
  */
 export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
-  const { url, extractors, timeoutMs = 25_000, signal } = opts;
+  const { url, extractors, timeoutMs = 45_000, signal } = opts;
 
   return new Promise<any>((resolve, reject) => {
     // Construct hardened argument list
@@ -41,6 +41,7 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
       '--no-exec',
       '--no-cache-dir',
       '--no-warnings',
+      '--no-check-certificates',
       '--socket-timeout', '15',
       '--no-playlist',
       '--restrict-filenames',
@@ -65,7 +66,7 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
     const timer = setTimeout(() => {
       killed = true;
       proc.kill('SIGKILL');
-      reject(new AppError('PROCESSING_TIMEOUT', 'Media inspection timed out after 25s'));
+      reject(new AppError('PROCESSING_TIMEOUT', 'Media inspection timed out after 45s'));
     }, timeoutMs);
 
     if (signal) {
@@ -135,6 +136,7 @@ export async function runYtDlpDownload(opts: YtDlpDownloadOptions): Promise<void
       '--no-exec',
       '--no-cache-dir',
       '--no-warnings',
+      '--no-check-certificates',
       '--socket-timeout', '20',
       '--no-playlist',
       '--restrict-filenames',

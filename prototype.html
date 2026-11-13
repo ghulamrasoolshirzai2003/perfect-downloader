@@ -178,7 +178,7 @@ const PL=[['YouTube',0,'Videos, Shorts, audio','youtube.com,youtu.be'],['TikTok'
 ['Imgur',4,'Images, GIFs','imgur.com'],['Flickr',4,'Public photos','flickr.com'],['Telegram',5,'Public channel media','t.me']].map(p=>({n:p[0],c:p[1],t:p[2],h:p[3].split(','),s:p[0].toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}));
 const kindOf=p=>p.c===2?'a':p.c===4?'i':'v';
 let pcat='All',pq='',pending=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30'};
-const $=s=>document.querySelector(s),esc=s=>s.replace(/[<&]/g,'');
+const $=s=>document.querySelector(s),esc=s=>{if(s==null)return'';if(typeof s==='object')return String(s.message||s.code||JSON.stringify(s)).replace(/[<&]/g,'');return String(s).replace(/[<&]/g,'');};
 const toast=m=>{const t=$('#toast');t.innerHTML=I('check')+m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('on'),2200)};
 const seed=u=>[...u].reduce((a,c)=>a+c.charCodeAt(0),0);
 function optsFor(){const f=.7+(seed(an.url)%9)/10,k=kindOf(an.p),sz=x=>(x*f).toFixed(x*f<10?1:0)+' MB';

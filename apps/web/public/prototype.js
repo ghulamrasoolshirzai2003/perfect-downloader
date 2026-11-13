@@ -25,7 +25,7 @@ const PL=[['YouTube',0,'Videos, Shorts, audio','youtube.com,youtu.be'],['TikTok'
 ['Imgur',4,'Images, GIFs','imgur.com'],['Flickr',4,'Public photos','flickr.com'],['Telegram',5,'Public channel media','t.me']].map(p=>({n:p[0],c:p[1],t:p[2],h:p[3].split(','),s:p[0].toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}));
 const kindOf=p=>p.c===2?'a':p.c===4?'i':'v';
 let pcat='All',pq='',pending=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30'};
-const $=s=>document.querySelector(s),esc=s=>s.replace(/[<&]/g,'');
+const $=s=>document.querySelector(s),esc=s=>{if(s==null)return'';if(typeof s==='object')return String(s.message||s.code||JSON.stringify(s)).replace(/[<&]/g,'');return String(s).replace(/[<&]/g,'');};
 const toast=m=>{const t=$('#toast');t.innerHTML=I('check')+m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('on'),2200)};
 const seed=u=>[...u].reduce((a,c)=>a+c.charCodeAt(0),0);
 
@@ -175,7 +175,8 @@ function paint(){
               clearInterval(check);
               an.st = 'err';
               an.errMsg = 'Download failed';
-              an.errDetail = jBody.job.error?.message || 'Download could not be completed';
+              const jErr = jBody.job.error;
+              an.errDetail = (typeof jErr === 'string' ? jErr : jErr?.message) || 'Download could not be completed';
               paint();
               toast('Download failed');
             }
@@ -184,12 +185,13 @@ function paint(){
         }, 600);
         return;
       }
-      throw new Error(body.message || 'No job created');
+      const errMsg = (body.error && body.error.message) || body.message || 'No job created';
+      throw new Error(errMsg);
     })
     .catch((err) => {
       an.st = 'err';
       an.errMsg = 'Unable to start download';
-      an.errDetail = err.message || 'Check connection to backend server';
+      an.errDetail = (err && err.message) || 'Check connection to backend server';
       paint();
       toast('Download failed');
     });
@@ -218,9 +220,10 @@ function analyse(){
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: v })
   })
-  .then(res => res.json())
-  .then(body => {
-    if (body.data && body.data.formats && body.data.formats.length > 0) {
+  .then(async res => {
+    let body;
+    try { body = await res.json(); } catch(e) { body = { error: { message: `Server returned status ${res.status}` } }; }
+    if (res.ok && body.data && body.data.formats && body.data.formats.length > 0) {
       an.st = 'ready';
       an.realData = body.data;
       an.title = body.data.title;
@@ -233,15 +236,20 @@ function analyse(){
       paint();
     } else {
       an.st = 'err';
-      an.errMsg = body.message || 'Media not found';
-      an.errDetail = body.error || 'Could not extract stream. Please verify the URL is public and available.';
+      const errObj = body.error || {};
+      an.errMsg = errObj.code === 'AUTHORIZATION_REQUIRED' ? 'Private or Login-Protected' :
+                   errObj.code === 'CONTENT_UNAVAILABLE' ? 'Media Not Found' :
+                   errObj.code === 'SSRF_DETECTED' ? 'Blocked Address' :
+                   errObj.code === 'UNSUPPORTED_PLATFORM' ? 'Platform Not Supported' :
+                   (typeof errObj.message === 'string' ? 'Media Unavailable' : (body.message || 'Media not found'));
+      an.errDetail = (typeof errObj === 'string' ? errObj : errObj.message) || body.message || 'Could not extract stream. Please verify the URL is public and available.';
       paint();
     }
   })
   .catch(err => {
     an.st = 'err';
     an.errMsg = 'Network request failed';
-    an.errDetail = err.message || 'Could not reach backend inspector';
+    an.errDetail = (err && err.message) || 'Could not reach backend inspector';
     paint();
   });
 }
