@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeUrl, detectPlatform, AppError, isIpLiteral, DownloadRequestSchema } from '@pd/shared';
-import { isPrivateOrReservedIp, validateUrlSsrfSafe } from '@pd/downloader-core';
+import { isPrivateOrReservedIp, validateUrlSsrfSafe, humanizeYtDlpError } from '@pd/downloader-core';
 
 describe('URL Normalization and Detection', () => {
   it('normalizes bare URLs by prepending https:', () => {
@@ -50,6 +50,19 @@ describe('URL Normalization and Detection', () => {
     expect(detectPlatform('https://www.flickr.com/photos/scottspencer2012/55649328537/').platform?.id).toBe('flickr');
     expect(detectPlatform('https://imgur.com/A61SaA1').platform?.id).toBe('imgur');
     expect(detectPlatform('https://t.me/europa_press/613').platform?.id).toBe('telegram');
+    expect(detectPlatform('https://www.threads.net/@zuck/post/123').platform?.id).toBe('threads');
+    expect(detectPlatform('https://giphy.com/gifs/JIX9t2j0ZTN9S').platform?.id).toBe('giphy');
+    expect(detectPlatform('https://tenor.com/view/cat-typing-gif-15368542').platform?.id).toBe('tenor');
+  });
+
+  it('humanizes raw yt-dlp extractor stderr errors without leaking CLI jargon', () => {
+    const ttMsg = humanizeYtDlpError(
+      'ERROR: [tiktok:user] bollywood2334: Unable to extract secondary user ID. try using "tiktokuser:channel_id"',
+    );
+    expect(ttMsg).not.toContain('tiktokuser:channel_id');
+    expect(ttMsg).not.toContain('ERROR:');
+    expect(humanizeYtDlpError('ERROR: Private video. Sign in if you have been granted access')).toMatch(/private|signing in/i);
+    expect(humanizeYtDlpError('HTTP Error 404: Not Found')).toMatch(/not be found|deleted/i);
   });
 
   it('accepts long social captions (>256 up to 1024 chars) and fallback formatIds in DownloadRequestSchema', () => {

@@ -4,6 +4,7 @@ import { AppError } from '@pd/shared';
 export interface YtDlpInspectOptions {
   url: string;
   extractors: string[];
+  allowPlaylistFirst?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -27,11 +28,41 @@ export interface YtDlpDownloadOptions {
   signal?: AbortSignal;
 }
 
+/** Converts verbose yt-dlp stderr CLI messages into clear, user-friendly messages. */
+export function humanizeYtDlpError(stderr: string): string {
+  const lower = stderr.toLowerCase();
+  if (
+    lower.includes('private') ||
+    lower.includes('members only') ||
+    lower.includes('sign in') ||
+    lower.includes('login') ||
+    lower.includes('cookies')
+  ) {
+    return 'This content is private or requires signing in on the source platform.';
+  }
+  if (lower.includes('not found') || lower.includes('404') || lower.includes('removed') || lower.includes('deleted')) {
+    return 'This media could not be found or may have been deleted.';
+  }
+  if (lower.includes('copyright') || lower.includes('drm') || lower.includes('geo')) {
+    return 'This media is restricted by copyright, region, or DRM protection.';
+  }
+  if (lower.includes('unable to extract secondary user id') || lower.includes('tiktokuser:')) {
+    return 'Could not load videos from this TikTok profile. Try a direct video link if the profile has no public embed feed.';
+  }
+  if (lower.includes('unsupported url')) {
+    return 'No downloadable video, audio, or image was found on that page.';
+  }
+  if (lower.includes('http error 429') || lower.includes('rate limit')) {
+    return 'The source platform temporarily rate-limited requests. Please try again in a few moments.';
+  }
+  return 'Could not extract downloadable media from this link. Make sure the link is public and contains video, audio, or images.';
+}
+
 /**
  * Runs `yt-dlp -J` safely to retrieve media metadata and format definitions
  */
 export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
-  const { url, extractors, timeoutMs = 45_000, signal } = opts;
+  const { url, extractors, allowPlaylistFirst = false, timeoutMs = 45_000, signal } = opts;
 
   return new Promise<any>((resolve, reject) => {
     // Construct hardened argument list
@@ -44,7 +75,7 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
       '--no-warnings',
       '--no-check-certificates',
       '--socket-timeout', '15',
-      '--no-playlist',
+      ...(allowPlaylistFirst ? ['--playlist-items', '1'] : ['--no-playlist']),
       '--restrict-filenames',
       '-J',
     ];
@@ -67,7 +98,7 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
     const timer = setTimeout(() => {
       killed = true;
       proc.kill('SIGKILL');
-      reject(new AppError('PROCESSING_TIMEOUT', 'Media inspection timed out after 45s'));
+      reject(new AppError('PROCESSING_TIMEOUT', 'Looking up this link took too long. Please try again.'));
     }, timeoutMs);
 
     if (signal) {
@@ -88,7 +119,7 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
 
     proc.on('error', (err) => {
       clearTimeout(timer);
-      reject(new AppError('INTERNAL_ERROR', `Failed to start yt-dlp: ${err.message}`));
+      reject(new AppError('INTERNAL_ERROR', `Failed to start downloader engine: ${err.message}`));
     });
 
     proc.on('close', (code) => {
@@ -96,28 +127,31 @@ export async function runYtDlpInspect(opts: YtDlpInspectOptions): Promise<any> {
       if (killed) return;
 
       if (code !== 0) {
+        if (stderrAcc.trim()) {
+          console.warn('[yt-dlp inspect error]', stderrAcc.slice(-300).trim());
+        }
         const errLower = stderrAcc.toLowerCase();
         if (errLower.includes('private') || errLower.includes('members only') || errLower.includes('sign in')) {
-          return reject(new AppError('AUTHORIZATION_REQUIRED', 'This content is private or requires authentication to view'));
+          return reject(new AppError('AUTHORIZATION_REQUIRED', humanizeYtDlpError(stderrAcc)));
         }
         if (errLower.includes('not found') || errLower.includes('404') || errLower.includes('removed') || errLower.includes('deleted')) {
-          return reject(new AppError('CONTENT_UNAVAILABLE', 'The requested media could not be found or has been removed'));
+          return reject(new AppError('CONTENT_UNAVAILABLE', humanizeYtDlpError(stderrAcc)));
         }
         if (errLower.includes('copyright') || errLower.includes('drm')) {
-          return reject(new AppError('DOWNLOAD_NOT_PERMITTED', 'This media cannot be retrieved due to access or copyright restrictions'));
+          return reject(new AppError('DOWNLOAD_NOT_PERMITTED', humanizeYtDlpError(stderrAcc)));
         }
-        return reject(new AppError('PROCESSING_FAILED', `Media inspection failed: ${stderrAcc.slice(-300).trim() || 'Unknown extractor error'}`));
+        return reject(new AppError('PROCESSING_FAILED', humanizeYtDlpError(stderrAcc)));
       }
 
       try {
         const jsonStart = stdoutAcc.indexOf('{');
         if (jsonStart === -1) {
-          throw new Error('No JSON output returned');
+          throw new Error('No metadata returned');
         }
         const data = JSON.parse(stdoutAcc.slice(jsonStart));
         resolve(data);
       } catch (err: any) {
-        reject(new AppError('PROCESSING_FAILED', `Failed to parse extractor JSON: ${err.message}`));
+        reject(new AppError('PROCESSING_FAILED', `Could not read media details from this page (${err.message}).`));
       }
     });
   });
@@ -242,11 +276,14 @@ export async function runYtDlpDownload(opts: YtDlpDownloadOptions): Promise<void
       if (code === 0) {
         resolve();
       } else {
+        if (stderrAcc.trim()) {
+          console.warn('[yt-dlp download error]', stderrAcc.slice(-300).trim());
+        }
         const errLower = stderrAcc.toLowerCase();
         if (errLower.includes('filesize') && errLower.includes('max-filesize')) {
           return reject(new AppError('FILE_TOO_LARGE', `Media exceeds maximum permitted size of ${maxFileSizeMb}MB`));
         }
-        reject(new AppError('PROCESSING_FAILED', `Download failed: ${stderrAcc.slice(-300).trim() || 'Process exited with error'}`));
+        reject(new AppError('PROCESSING_FAILED', humanizeYtDlpError(stderrAcc)));
       }
     });
   });

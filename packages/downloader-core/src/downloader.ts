@@ -7,7 +7,7 @@ import {
 import { TempStorageManager, type ManagedTempFile, runFFmpeg } from '@pd/media-core';
 import { validateUrlSsrfSafe } from './ssrf-guard';
 import { runYtDlpDownload, type YtDlpDownloadProgress } from './ytdlp-runner';
-import { extractWithFallback, hasFallbackAdapter } from './fallback-extractors';
+import { extractWithFallback, extractGenericFallback, hasFallbackAdapter } from './fallback-extractors';
 import { safeDownloadToFile } from './http-safe';
 
 export interface ExecuteDownloadOptions {
@@ -34,16 +34,31 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
   const { url: rawUrl, formatId, title, attestation, targetFormat, clipStart, clipEnd, runtimeContext, tempManager, onProgress, signal } = opts;
 
   const detection = detectPlatform(rawUrl);
-  const platform = detection.platform;
+  const isUnknownPlatform = !detection.platform;
+  const platform = detection.platform || {
+    id: 'generic',
+    name: detection.url.hostname.replace(/^www\./i, ''),
+    category: 'video' as const,
+    domains: [detection.url.hostname],
+    adapter: 'ytdlp' as const,
+    extractors: [],
+    mediaTypes: ['video', 'audio', 'image', 'thumbnail'] as const,
+    operations: ['inspect', 'download_video', 'download_audio', 'download_thumbnail'] as const,
+    auth: 'none' as const,
+    policy: 'open' as const,
+    baseStatus: 'available' as const,
+    limitations: [],
+    termsNote: '',
+    lastVerified: null,
+    color: '#64748b',
+  };
 
-  if (!platform) {
-    throw new AppError('UNSUPPORTED_PLATFORM', 'This URL is not supported');
-  }
-
-  const effectiveStatus = resolvePlatformStatus(platform, runtimeContext);
+  const effectiveStatus = isUnknownPlatform
+    ? 'available'
+    : resolvePlatformStatus(platform, runtimeContext);
 
   if (effectiveStatus === 'unavailable') {
-    throw new AppError('PLATFORM_TEMPORARILY_UNAVAILABLE', `${platform.name} is currently unavailable`);
+    throw new AppError('PLATFORM_TEMPORARILY_UNAVAILABLE', `${platform.name} is not supported because its content is private or discontinued.`);
   }
 
   if (effectiveStatus === 'restricted') {
@@ -92,7 +107,12 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
   let fallbackPickedExt: string | undefined;
 
   const runFallbackDownload = async () => {
-    const fb = await extractWithFallback(platform.id, safeUrl.toString(), signal);
+    let fb = hasFallbackAdapter(platform.id)
+      ? await extractWithFallback(platform.id, safeUrl.toString(), signal)
+      : null;
+    if (!fb || fb.formats.length === 0) {
+      fb = await extractGenericFallback(safeUrl.toString(), signal);
+    }
     if (!fb || fb.formats.length === 0) {
       throw new AppError('CONTENT_UNAVAILABLE', `Unable to extract downloadable media from ${platform.name}`);
     }
@@ -138,24 +158,62 @@ export async function executeDownload(opts: ExecuteDownloadOptions): Promise<Exe
       ? (VIDEO_MERGE_CONTAINERS.has(normTarget) ? normTarget : undefined)
       : 'mp4';
 
-    if (formatId.startsWith('fb:') || platform.extractors.length === 0) {
+    if (formatId.startsWith('fb:')) {
       await runFallbackDownload();
+    } else if (platform.extractors.length === 0) {
+      if (hasFallbackAdapter(platform.id)) {
+        try {
+          await runFallbackDownload();
+        } catch {
+          await runYtDlpDownload({
+            url: safeUrl.toString(),
+            formatId: effectiveFormat,
+            outputPath: downloadTemp.path,
+            extractors: [],
+            mergeOutputFormat: mergeFormat,
+            onProgress,
+            signal,
+          });
+        }
+      } else {
+        try {
+          await runYtDlpDownload({
+            url: safeUrl.toString(),
+            formatId: effectiveFormat,
+            outputPath: downloadTemp.path,
+            extractors: [],
+            mergeOutputFormat: mergeFormat,
+            onProgress,
+            signal,
+          });
+        } catch {
+          await runFallbackDownload();
+        }
+      }
     } else {
       try {
         await runYtDlpDownload({
           url: safeUrl.toString(),
           formatId: effectiveFormat,
           outputPath: downloadTemp.path,
-          extractors: platform.extractors,
+          extractors: [...platform.extractors],
           mergeOutputFormat: mergeFormat,
           onProgress,
           signal,
         });
-      } catch (ytErr) {
-        if (hasFallbackAdapter(platform.id)) {
+      } catch {
+        try {
           await runFallbackDownload();
-        } else {
-          throw ytErr;
+        } catch {
+          await runYtDlpDownload({
+            url: safeUrl.toString(),
+            formatId: effectiveFormat,
+            outputPath: downloadTemp.path,
+            extractors: [],
+            mergeOutputFormat: mergeFormat,
+            onProgress,
+            signal,
+          });
         }
       }
     }

@@ -68,6 +68,9 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
         continue;
       }
 
+      if (!resp.url) {
+        Object.defineProperty(resp, 'url', { value: currentUrl, configurable: true });
+      }
       return resp;
     } catch (err: any) {
       if (err?.name === 'AbortError') {
@@ -82,6 +85,76 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
   }
 
   throw new AppError('CONTENT_UNAVAILABLE', 'Too many redirects while fetching remote media');
+}
+
+export async function safeProbeUrl(
+  rawUrl: string,
+  opts: { timeoutMs?: number; maxRedirects?: number; headers?: Record<string, string>; signal?: AbortSignal } = {},
+): Promise<{ finalUrl: string; status: number; contentType: string; contentLength?: number }> {
+  const { timeoutMs = 12_000, maxRedirects = 5, headers = {}, signal } = opts;
+  let currentUrl = rawUrl;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const { safeUrl } = await validateUrlSsrfSafe(currentUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        throw new AppError('PROCESSING_FAILED', 'Request aborted');
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    try {
+      let resp = await fetch(safeUrl.toString(), {
+        method: 'HEAD',
+        headers: {
+          'user-agent': DEFAULT_USER_AGENT,
+          'accept-language': 'en-US,en;q=0.9',
+          ...headers,
+        },
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+
+      if (resp.status === 405 || resp.status === 403 || resp.status === 400) {
+        await resp.body?.cancel().catch(() => {});
+        resp = await fetch(safeUrl.toString(), {
+          method: 'GET',
+          headers: {
+            'user-agent': DEFAULT_USER_AGENT,
+            'accept-language': 'en-US,en;q=0.9',
+            range: 'bytes=0-0',
+            ...headers,
+          },
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+      }
+
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get('location');
+        await resp.body?.cancel().catch(() => {});
+        if (!loc) {
+          return { finalUrl: safeUrl.toString(), status: resp.status, contentType: '' };
+        }
+        currentUrl = new URL(loc, safeUrl).toString();
+        continue;
+      }
+
+      const ct = (resp.headers.get('content-type') || '').split(';')[0]?.trim().toLowerCase() || '';
+      const cl = Number(resp.headers.get('content-length') || 0) || undefined;
+      await resp.body?.cancel().catch(() => {});
+      return { finalUrl: safeUrl.toString(), status: resp.status, contentType: ct, contentLength: cl };
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  return { finalUrl: currentUrl, status: 200, contentType: '' };
 }
 
 export async function safeFetchText(

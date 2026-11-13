@@ -2,6 +2,9 @@
 const nextConfig = {
   transpilePackages: ['@pd/shared'],
   reactStrictMode: true,
+  experimental: {
+    proxyTimeout: 120_000,
+  },
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '**' },

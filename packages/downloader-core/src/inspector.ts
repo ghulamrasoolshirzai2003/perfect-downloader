@@ -11,6 +11,7 @@ import { validateUrlSsrfSafe } from './ssrf-guard';
 import { runYtDlpInspect } from './ytdlp-runner';
 import {
   extractWithFallback,
+  extractGenericFallback,
   hasFallbackAdapter,
   toPublicMediaFormats,
 } from './fallback-extractors';
@@ -30,17 +31,32 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
 
   // 1. Syntactic normalisation and platform matching
   const detection = detectPlatform(rawUrl);
-  const platform = detection.platform;
-
-  if (!platform) {
-    throw new AppError('UNSUPPORTED_PLATFORM', 'This URL does not match any supported media platform');
-  }
+  const isUnknownPlatform = !detection.platform;
+  const platform = detection.platform || {
+    id: 'generic',
+    name: detection.url.hostname.replace(/^www\./i, ''),
+    category: 'video' as const,
+    domains: [detection.url.hostname],
+    adapter: 'ytdlp' as const,
+    extractors: [],
+    mediaTypes: ['video', 'audio', 'image', 'thumbnail'] as const,
+    operations: ['inspect', 'download_video', 'download_audio', 'download_thumbnail'] as const,
+    auth: 'none' as const,
+    policy: 'open' as const,
+    baseStatus: 'available' as const,
+    limitations: [],
+    termsNote: '',
+    lastVerified: null,
+    color: '#64748b',
+  };
 
   // 2. Check platform policy & availability in current deployment
-  const effectiveStatus = resolvePlatformStatus(platform, runtimeContext);
+  const effectiveStatus = isUnknownPlatform
+    ? 'available'
+    : resolvePlatformStatus(platform, runtimeContext);
 
   if (effectiveStatus === 'unavailable') {
-    throw new AppError('PLATFORM_TEMPORARILY_UNAVAILABLE', `${platform.name} is temporarily disabled on this server`);
+    throw new AppError('PLATFORM_TEMPORARILY_UNAVAILABLE', `${platform.name} is not supported because its content is private or discontinued.`);
   }
 
   if (effectiveStatus === 'restricted') {
@@ -51,15 +67,21 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
     );
   }
 
-  if (effectiveStatus === 'planned') {
-    throw new AppError('UNSUPPORTED_PLATFORM', `${platform.name} support is planned but not yet released`);
+  // 3. SSRF & DNS rebinding protection
+  let safeUrl: URL;
+  try {
+    ({ safeUrl } = await validateUrlSsrfSafe(detection.url));
+  } catch (ssrfErr) {
+    if (isUnknownPlatform && ssrfErr instanceof AppError && ssrfErr.code === 'CONTENT_UNAVAILABLE') {
+      throw new AppError('UNSUPPORTED_PLATFORM', 'This URL could not be reached or is not a supported media page.');
+    }
+    throw ssrfErr;
   }
 
-  // 3. SSRF & DNS rebinding protection
-  const { safeUrl } = await validateUrlSsrfSafe(detection.url);
-
-  const buildFallbackResult = async () => {
-    const fb = await extractWithFallback(platform.id, safeUrl.toString(), signal);
+  const toInspectResultFromFallback = (
+    fb: Awaited<ReturnType<typeof extractWithFallback>>,
+    platId: string,
+  ): InspectResult | null => {
     if (!fb || fb.formats.length === 0) return null;
     const formats = toPublicMediaFormats(fb.formats);
     const bestVideo = formats.find((f) => f.hasVideo) || formats[0];
@@ -68,7 +90,7 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
       url: rawUrl,
       canonicalUrl: fb.canonicalUrl || safeUrl.toString(),
       platform: {
-        id: platform.id,
+        id: platId,
         name: platform.name,
         category: platform.category,
         status: effectiveStatus,
@@ -86,29 +108,139 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
       bestVideo,
       bestAudio,
       inspectedAt: new Date().toISOString(),
-    } satisfies InspectResult;
+    };
   };
 
-  // 4. Run extractor inspection (or fallback when no yt-dlp extractors or yt-dlp fails)
+  const buildFallbackResult = async () => {
+    if (!hasFallbackAdapter(platform.id)) return null;
+    const fb = await extractWithFallback(platform.id, safeUrl.toString(), signal);
+    return toInspectResultFromFallback(fb, platform.id);
+  };
+
+  // Helper to run yt-dlp and unwrap channel / playlist entries up to 2 hops
+  const inspectYtDlpPlayable = async (targetUrl: string, extractors: string[]): Promise<any> => {
+    const isPlaylistLikeUrl =
+      /[?&]list=|\/(?:playlist|channel\/|c\/|user\/)|\/@[^/]+(?:\/(?:videos|shorts|streams|playlists))?\/?$/i.test(
+        targetUrl,
+      ) && !/\/(?:video|photo)\//i.test(targetUrl);
+
+    let meta = await runYtDlpInspect({
+      url: targetUrl,
+      extractors,
+      allowPlaylistFirst: isPlaylistLikeUrl,
+      signal,
+    });
+
+    const isUnplayablePlaylist =
+      meta &&
+      (meta._type === 'playlist' || Array.isArray(meta.entries)) &&
+      (!Array.isArray(meta.formats) || meta.formats.length === 0);
+
+    if (isUnplayablePlaylist && !isPlaylistLikeUrl) {
+      meta = await runYtDlpInspect({
+        url: targetUrl,
+        extractors,
+        allowPlaylistFirst: true,
+        signal,
+      });
+    }
+
+    let current = meta;
+    for (let hop = 0; hop < 2; hop++) {
+      if (
+        current &&
+        (current._type === 'playlist' || Array.isArray(current.entries)) &&
+        (!Array.isArray(current.formats) || current.formats.length === 0)
+      ) {
+        const firstEntry = Array.isArray(current.entries) ? current.entries.find(Boolean) : undefined;
+        if (!firstEntry) break;
+        if (Array.isArray(firstEntry.formats) && firstEntry.formats.length > 0) {
+          current = {
+            ...firstEntry,
+            uploader: firstEntry.uploader || current.uploader || current.channel,
+            uploader_url: firstEntry.uploader_url || current.uploader_url || current.channel_url,
+          };
+          break;
+        }
+        const hopUrl = firstEntry.webpage_url || firstEntry.url;
+        if (typeof hopUrl === 'string' && /^https?:\/\//i.test(hopUrl)) {
+          await validateUrlSsrfSafe(hopUrl);
+          current = await runYtDlpInspect({
+            url: hopUrl,
+            extractors,
+            allowPlaylistFirst: true,
+            signal,
+          });
+          continue;
+        }
+      }
+      break;
+    }
+
+    if (
+      current &&
+      (current._type === 'playlist' || Array.isArray(current.entries)) &&
+      (!Array.isArray(current.formats) || current.formats.length === 0) &&
+      !current.url
+    ) {
+      throw new AppError('CONTENT_UNAVAILABLE', 'No playable video or audio item was found in that feed.');
+    }
+    return current;
+  };
+
+  // Fast path: TikTok @user profiles fail in yt-dlp `tiktok:user`, so resolve directly via TikTok embed/TikWM
+  const isTikTokProfile =
+    platform.id === 'tiktok' &&
+    /\/@[A-Za-z0-9_.-]+\/?$/i.test(safeUrl.pathname) &&
+    !/\/(?:video|photo)\//i.test(safeUrl.pathname);
+
+  if (isTikTokProfile) {
+    const ttProfileRes = await buildFallbackResult();
+    if (ttProfileRes) return ttProfileRes;
+  }
+
+  // 4. Multi-layer inspection cascade:
+  //    (a) platform adapter fallback when platform.extractors === [] (or after scoped yt-dlp fails)
+  //    (b) scoped yt-dlp -> (c) unscoped yt-dlp (all 1000+ extractors) -> (d) generic HTML/direct media fallback
+  let rawMeta: any = null;
+  let lastErr: unknown = null;
+
   if (platform.extractors.length === 0 && hasFallbackAdapter(platform.id)) {
     const fbResult = await buildFallbackResult();
     if (fbResult) return fbResult;
-    throw new AppError('CONTENT_UNAVAILABLE', `Could not extract media from ${platform.name}`);
   }
 
-  let rawMeta: any;
-  try {
-    rawMeta = await runYtDlpInspect({
-      url: safeUrl.toString(),
-      extractors: platform.extractors,
-      signal,
-    });
-  } catch (ytErr) {
-    if (hasFallbackAdapter(platform.id)) {
-      const fbResult = await buildFallbackResult();
-      if (fbResult) return fbResult;
+  if (platform.extractors.length > 0) {
+    try {
+      rawMeta = await inspectYtDlpPlayable(safeUrl.toString(), [...platform.extractors]);
+    } catch (err) {
+      lastErr = err;
     }
-    throw ytErr;
+  }
+
+  if (!rawMeta && platform.extractors.length > 0 && hasFallbackAdapter(platform.id)) {
+    const fbResult = await buildFallbackResult();
+    if (fbResult) return fbResult;
+  }
+
+  if (!rawMeta) {
+    try {
+      rawMeta = await inspectYtDlpPlayable(safeUrl.toString(), []);
+    } catch (err) {
+      if (!lastErr) lastErr = err;
+    }
+  }
+
+  if (!rawMeta) {
+    const genericFb = await extractGenericFallback(safeUrl.toString(), signal);
+    const genericRes = toInspectResultFromFallback(genericFb, platform.id);
+    if (genericRes) return genericRes;
+
+    if (isUnknownPlatform) {
+      throw new AppError('UNSUPPORTED_PLATFORM', 'No downloadable video, audio, or image was found at this link.');
+    }
+    if (lastErr instanceof AppError) throw lastErr;
+    throw new AppError('CONTENT_UNAVAILABLE', `Could not find downloadable media at this ${platform.name} link.`);
   }
 
   // 5. Parse and normalize formats

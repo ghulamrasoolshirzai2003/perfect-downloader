@@ -33,8 +33,9 @@ const effectiveKind=p=>{
   }
   return kindOf(p);
 };
-let pcat='All',pq='',pending=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30'};
+let pcat='All',pq='',pending=null,dlPoll=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30',instant:true,altOpen:false};
 const $=s=>document.querySelector(s),esc=s=>{if(s==null)return'';const str=typeof s==='object'?String(s.message||s.code||JSON.stringify(s)):String(s);return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');};
+const cleanErr=m=>{let s=String(m||'Could not extract downloadable media from this link. Make sure the post or file is public and try again.');if(/media inspection failed:|error:\s*\[|tiktokuser:|please report this issue/i.test(s))return 'Could not extract downloadable media from this link. Try a direct post/video link or make sure it is public.';return s;};
 const toast=m=>{const t=$('#toast');t.innerHTML=I('check')+m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('on'),2200)};
 const seed=u=>[...u].reduce((a,c)=>a+c.charCodeAt(0),0);
 const fmtSize=(bytes,fallback)=>{if(!bytes||bytes<=0)return fallback;if(bytes<1024*1024)return `${Math.max(1,Math.round(bytes/1024))} KB`;return `${(bytes/(1024*1024)).toFixed(bytes<10*1024*1024?1:0)} MB`;};
@@ -78,7 +79,8 @@ function optsFor(){
       const tierOf = f => (f.width && f.height ? Math.min(f.width, f.height) : (f.height || 0));
       const dedup = [];
       const seenTiers = new Set();
-      const sorted = [...videoFormats].sort((a, b) => {
+      const hasMultiPosts = videoFormats.some(f => String(f.formatId).startsWith('fb:v_post') || /^Video #\d+/i.test(f.qualityLabel || ''));
+      const sorted = hasMultiPosts ? [...videoFormats] : [...videoFormats].sort((a, b) => {
         const diff = tierOf(b) - tierOf(a);
         if (diff !== 0) return diff;
         if (a.ext === 'mp4' && b.ext !== 'mp4') return -1;
@@ -89,11 +91,12 @@ function optsFor(){
       });
       for (const f of sorted) {
         const t = tierOf(f);
-        const key = t > 0 ? `h:${t}` : `id:${f.formatId}`;
+        const isDistinctPost = String(f.formatId).startsWith('fb:v_post') || /^Video #\d+/i.test(f.qualityLabel || '');
+        const key = isDistinctPost ? `id:${f.formatId}` : (t > 0 ? `h:${t}` : `id:${f.formatId}`);
         if (seenTiers.has(key)) continue;
         seenTiers.add(key);
         dedup.push(f);
-        if (dedup.length >= 4) break;
+        if (dedup.length >= 6) break;
       }
       return dedup.map((f, idx) => {
         const outExt = (f.ext && f.ext !== 'webm') ? f.ext.toLowerCase() : (!f.isVideoOnly && f.ext === 'webm' ? 'webm' : 'mp4');
@@ -117,128 +120,142 @@ function optsFor(){
   return(an.tab==='a'||k==='a'?A:k==='i'?Im:V).map(o=>[o[0],sz(o[1]),o[2],o[3]||'best',o[4]]);
 }
 
+function startDownload(O){
+  if (dlPoll) { clearInterval(dlPoll); dlPoll = null; }
+  const opts = O || optsFor();
+  an.st = 'prog';
+  an.pct = 0;
+  an.stage = 'Starting download...';
+  paint();
+
+  const chosen = opts[an.opt] || opts[0];
+  const k = effectiveKind(an.p);
+  const formatId = (chosen && chosen[3]) || 'best';
+  const isAudio = (an.tab === 'a' || k === 'a');
+  const targetFormat = (chosen && chosen[4]) || (isAudio ? 'mp3' : undefined);
+  const cleanTitle = String(an.title || 'media').replace(/\s+/g, ' ').trim().slice(0, 200) || 'media';
+  const dlUrl = (!String(formatId).startsWith('fb:') && an.realData && an.realData.canonicalUrl) || an.url;
+
+  fetch('/api/v1/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: dlUrl,
+      formatId,
+      title: cleanTitle,
+      targetFormat,
+      clipStart: (an.clip && k !== 'i' && an.a) ? an.a.trim() : undefined,
+      clipEnd: (an.clip && k !== 'i' && an.b) ? an.b.trim() : undefined,
+      attestation: true
+    })
+  })
+  .then(r => r.json())
+  .then(body => {
+    if (body.job) {
+      const jId = body.job.id;
+      dlPoll = setInterval(() => {
+        fetch(`/api/v1/jobs/${jId}`)
+        .then(r => r.json())
+        .then(jBody => {
+          const pb = $('#pb');
+          const pst = $('#pst');
+          const ppc = $('#ppc');
+          if (jBody.job?.progress?.percent !== undefined) {
+            an.pct = Math.min(Math.round(jBody.job.progress.percent), 100);
+            if (pb) pb.style.width = Math.max(an.pct, 4) + '%';
+            if (ppc) ppc.textContent = an.pct + '%';
+          }
+          if (jBody.job?.progress?.stage) {
+            an.stage = jBody.job.progress.stage;
+            if (pst) pst.textContent = an.stage;
+          }
+          if (jBody.job?.status === 'completed') {
+            clearInterval(dlPoll); dlPoll = null;
+            an.st = 'done';
+            an.realDownloaded = true;
+            an.downloadUrl = jBody.job.downloadUrl;
+            an.outputFileName = jBody.job.outputFileName || 'media';
+            paint();
+            toast('Download complete');
+            if (jBody.job.downloadUrl) {
+              const dlLink = document.createElement('a');
+              dlLink.href = jBody.job.downloadUrl;
+              dlLink.download = jBody.job.outputFileName || 'media';
+              document.body.appendChild(dlLink);
+              dlLink.click();
+              setTimeout(() => { try { document.body.removeChild(dlLink); } catch(e){} }, 1500);
+            }
+          } else if (jBody.job?.status === 'failed') {
+            clearInterval(dlPoll); dlPoll = null;
+            an.st = 'err';
+            an.errMsg = 'Download failed';
+            const jErr = jBody.job.error;
+            an.errDetail = cleanErr(typeof jErr === 'string' ? jErr : jErr?.message);
+            paint();
+            toast('Download failed');
+          }
+        })
+        .catch(() => {});
+      }, 600);
+      return;
+    }
+    const errMsg = (body.error && body.error.message) || body.message || 'No job created';
+    throw new Error(errMsg);
+  })
+  .catch((err) => {
+    an.st = 'err';
+    an.errMsg = 'Unable to start download';
+    an.errDetail = cleanErr(err && err.message);
+    paint();
+    toast('Download failed');
+  });
+}
+
 function paint(){
   const r=$('#res');if(!r)return;const s=an.st;
   if(s==='idle')return r.innerHTML='';
-  if(s==='load')return r.innerHTML=`<div class="rc"><div class="rrow"><div class="sk thm" style="height:76px"></div><div style="flex:1;width:100%;display:grid;gap:8px"><div class="sk" style="height:16px;width:65%"></div><div class="sk" style="height:12px;width:35%"></div></div></div><div class="sk" style="height:170px;margin-top:18px"></div></div>`;
+  if(s==='load')return r.innerHTML=`<div class="rc"><div class="rrow"><div class="sk thm" style="height:76px"></div><div style="flex:1;width:100%;display:grid;gap:8px"><div class="sk" style="height:16px;width:65%"></div><div class="sk" style="height:12px;width:35%"></div></div></div><div style="margin-top:14px;font-size:13px;color:var(--mut)">${an.instant?'Finding best quality & starting download...':'Finding available formats...'}</div><div class="sk" style="height:120px;margin-top:12px"></div></div>`;
   if(s==='err')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">${esc(an.errMsg||'That doesn’t look like a link')}</b><p style="color:var(--mut);font-size:14px;margin-top:2px">${esc(an.errDetail||'Paste a full address beginning with https://')}</p><button class="btn" id="again-err" style="margin-top:14px">Try another link</button></div>`;
   if(s==='uns')return r.innerHTML=`<div class="rc"><b style="color:var(--err)">This site isn’t supported yet</b><p style="color:var(--mut);font-size:14px;margin-top:2px">See the <a href="#platforms" style="color:var(--ac)">full list of supported platforms</a>.</p></div>`;
-  const p=an.p,k=effectiveKind(p);
+  const p=an.p,k=effectiveKind(p),O=optsFor();
+  const pickerHtml = () => `${k==='v'?`<div class="seg" role="tablist" style="margin-top:14px"><button class="${an.tab==='v'?'on':''}" data-t="v">Video</button><button class="${an.tab==='a'?'on':''}" data-t="a">Audio only</button></div>`:'<div style="height:12px"></div>'}
+  <div class="opts" role="radiogroup">${O.map((o,i)=>`<button class="o ${i===an.opt?'on':''}" data-o="${i}" role="radio" aria-checked="${i===an.opt}"><span><i class="r"></i>${esc(o[0])}${o[2]?'<span class="best">BEST</span>':''}</span><span class="mono">${esc(o[1])}</span></button>`).join('')}</div>
+  ${k==='i'?'':`<div class="clip"><label><input type="checkbox" id="cl" ${an.clip?'checked':''}> Download only a section</label>${an.clip?`<input class="ip" id="ca" value="${an.a}" aria-label="Start"><span class="mono">to</span><input class="ip" id="cb" value="${an.b}" aria-label="End">`:''}</div>`}`;
+
   if(s==='done'){
     const fn = an.outputFileName || 'media-download';
     const dlLink = an.downloadUrl || '#';
-    r.innerHTML=`<div class="rc"><div class="det">${lg(p,22)}${p.n}</div><b style="display:block;margin:8px 0 4px">Download complete</b><p style="color:var(--mut);margin-bottom:16px;font-size:14px">Your file is ready: <span class="mono" style="color:var(--tx)">${esc(fn)}</span></p><a class="btn k" id="dl-file-btn" href="${dlLink}" download="${esc(fn)}" style="width:100%;margin-bottom:10px;height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none">${I('dl')} Save ${esc(fn)}</a><button class="btn" id="again" style="width:100%">Download another link</button></div>`;
-    const ag=$('#again');if(ag)ag.onclick=()=>{an={...an,st:'idle',url:'',clip:false,realData:null,downloadUrl:null};const uInput=$('#u');if(uInput)uInput.value='';paint();};
+    r.innerHTML=`<div class="rc"><div class="det">${lg(p,22)}${esc(p.n)}</div><b style="display:block;margin:8px 0 4px">Download complete</b><p style="color:var(--mut);margin-bottom:16px;font-size:14px">Your file is ready: <span class="mono" style="color:var(--tx)">${esc(fn)}</span></p><a class="btn k" id="dl-file-btn" href="${dlLink}" download="${esc(fn)}" style="width:100%;margin-bottom:10px;height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none">${I('dl')} Save ${esc(fn)}</a><div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" id="again" style="flex:1">Download another link</button>${an.realData&&k!=='i'?`<button class="btn" id="alt-btn" style="flex:1">${an.altOpen?'Hide other formats':'Other quality / MP3'}</button>`:''}</div>${an.altOpen?`${pickerHtml()}<button class="btn k" id="dlb" style="width:100%;margin-top:16px;height:48px;font-size:15px">${I('dl')} Download ${esc(O[an.opt]?O[an.opt][0]:'Media')}</button>`:''}</div>`;
+    const ag=$('#again');if(ag)ag.onclick=()=>{an={...an,st:'idle',url:'',clip:false,realData:null,downloadUrl:null,altOpen:false};const uInput=$('#u');if(uInput)uInput.value='';paint();};
+    const ab=$('#alt-btn');if(ab)ab.onclick=()=>{an.altOpen=!an.altOpen;paint();};
+    r.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{an.opt=+b.dataset.o;paint()});
+    r.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{an.tab=b.dataset.t;an.opt=0;paint()});
+    const cl=$('#cl');if(cl)cl.onchange=()=>{an.clip=cl.checked;paint()};
+    const ca=$('#ca');if(ca){ca.oninput=()=>an.a=ca.value;const cb=$('#cb');if(cb)cb.oninput=e=>an.b=e.target.value;}
+    const d=$('#dlb');if(d)d.onclick=()=>startDownload(O);
     return;
   }
-  const O=optsFor(),sec=130+seed(an.url)%400,dur=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
+
+  const sec=130+seed(an.url)%400,dur=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
   const thmHtml = an.thumbnail 
     ? `<div class="thm" style="overflow:hidden;padding:0"><img src="${an.thumbnail}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:10px"></div>` 
     : `<div class="thm">${I(k==='a'?'audio':k==='i'?'image':'play',26)}</div>`;
   const titleText = an.title || `Sample ${k==='a'?'track':k==='i'?'image':'video'} title`;
   const durText = an.realData ? (an.dur || (k==='i'?'Image':'Media')) : (an.dur || dur);
 
-  r.innerHTML=`<div class="rc"><div class="rrow">${thmHtml}<div><div class="det">${lg(p,22)}${p.n} detected</div><b>${esc(titleText)}</b><small>${k==='i'?'Image':durText}${an.uploader ? ' • ' + esc(an.uploader) : ''}</small></div></div>
-  ${k==='v'?`<div class="seg" role="tablist"><button class="${an.tab==='v'?'on':''}" data-t="v">Video</button><button class="${an.tab==='a'?'on':''}" data-t="a">Audio only</button></div>`:'<div style="height:16px"></div>'}
-  <div class="opts" role="radiogroup">${O.map((o,i)=>`<button class="o ${i===an.opt?'on':''}" data-o="${i}" role="radio" aria-checked="${i===an.opt}"><span><i class="r"></i>${o[0]}${o[2]?'<span class="best">BEST</span>':''}</span><span class="mono">${o[1]}</span></button>`).join('')}</div>
-  ${k==='i'?'':`<div class="clip"><label><input type="checkbox" id="cl" ${an.clip?'checked':''}> Download only a section</label>${an.clip?`<input class="ip" id="ca" value="${an.a}" aria-label="Start"><span class="mono">to</span><input class="ip" id="cb" value="${an.b}" aria-label="End">`:''}</div>`}
-  ${s==='prog'?`<div style="margin-top:16px"><div style="display:flex;justify-content:space-between;font-size:13px;color:var(--mut);margin-bottom:6px"><span id="pst">${esc(an.stage||'Downloading media...')}</span><span class="mono" id="ppc">${an.pct?an.pct+'%':''}</span></div><div class="pg"><i id="pb" style="width:${Math.max(an.pct||0, 4)}%"></i></div></div>`:`<button class="btn k" id="dlb" style="width:100%;margin-top:16px;height:50px;font-size:15px">${I('dl')} Download ${O[an.opt] ? O[an.opt][0] : 'Media'}</button>`}</div>`;
+  r.innerHTML=`<div class="rc"><div class="rrow">${thmHtml}<div><div class="det">${lg(p,22)}${esc(p.n)} detected</div><b>${esc(titleText)}</b><small>${k==='i'?'Image':durText}${an.uploader ? ' • ' + esc(an.uploader) : ''}</small></div></div>
+  ${s==='prog'?`<div style="margin-top:16px"><div style="display:flex;justify-content:space-between;font-size:13px;color:var(--mut);margin-bottom:6px"><span id="pst">${esc(an.stage||'Downloading media...')}</span><span class="mono" id="ppc">${an.pct?an.pct+'%':''}</span></div><div class="pg"><i id="pb" style="width:${Math.max(an.pct||0, 4)}%"></i></div><button class="btn" id="dl-cancel" style="margin-top:14px;width:100%">Cancel / Choose quality</button></div>`:`${pickerHtml()}<button class="btn k" id="dlb" style="width:100%;margin-top:16px;height:50px;font-size:15px">${I('dl')} Download ${esc(O[an.opt] ? O[an.opt][0] : 'Media')}</button>`}</div>`;
   r.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{an.opt=+b.dataset.o;paint()});
   r.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{an.tab=b.dataset.t;an.opt=0;paint()});
   const cl=$('#cl');if(cl)cl.onchange=()=>{an.clip=cl.checked;paint()};
   const ca=$('#ca');if(ca){ca.oninput=()=>an.a=ca.value;const cb=$('#cb');if(cb)cb.oninput=e=>an.b=e.target.value;}
   const againErr=$('#again-err');if(againErr)againErr.onclick=()=>{an={...an,st:'idle',url:'',errMsg:'',errDetail:''};const uInput=$('#u');if(uInput)uInput.value='';paint();};
-
-  const d=$('#dlb');
-  if(d)d.onclick=()=>{
-    an.st='prog';
-    an.pct=0;
-    an.stage='Connecting to downloader...';
-    paint();
-
-    const chosen = O[an.opt] || O[0];
-    const formatId = chosen[3] || 'best';
-    const isAudio = (an.tab === 'a' || k === 'a');
-    const targetFormat = chosen[4] || (isAudio ? 'mp3' : undefined);
-    const cleanTitle = String(an.title || 'media').replace(/\s+/g, ' ').trim().slice(0, 200) || 'media';
-
-    fetch('/api/v1/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: an.url,
-        formatId,
-        title: cleanTitle,
-        targetFormat,
-        clipStart: (an.clip && k !== 'i' && an.a) ? an.a.trim() : undefined,
-        clipEnd: (an.clip && k !== 'i' && an.b) ? an.b.trim() : undefined,
-        attestation: true
-      })
-    })
-    .then(r => r.json())
-    .then(body => {
-      if (body.job) {
-        const jId = body.job.id;
-        const check = setInterval(() => {
-          fetch(`/api/v1/jobs/${jId}`)
-          .then(r => r.json())
-          .then(jBody => {
-            const pb = $('#pb');
-            const pst = $('#pst');
-            const ppc = $('#ppc');
-            if (jBody.job?.progress?.percent !== undefined) {
-              an.pct = Math.min(Math.round(jBody.job.progress.percent), 100);
-              if (pb) pb.style.width = Math.max(an.pct, 4) + '%';
-              if (ppc) ppc.textContent = an.pct + '%';
-            }
-            if (jBody.job?.progress?.stage) {
-              an.stage = jBody.job.progress.stage;
-              if (pst) pst.textContent = an.stage;
-            }
-            if (jBody.job?.status === 'completed') {
-              clearInterval(check);
-              an.st = 'done';
-              an.realDownloaded = true;
-              an.downloadUrl = jBody.job.downloadUrl;
-              an.outputFileName = jBody.job.outputFileName || 'media';
-              paint();
-              toast('Download complete');
-              if (jBody.job.downloadUrl) {
-                const dlLink = document.createElement('a');
-                dlLink.href = jBody.job.downloadUrl;
-                dlLink.download = jBody.job.outputFileName || 'media';
-                document.body.appendChild(dlLink);
-                dlLink.click();
-                setTimeout(() => { try { document.body.removeChild(dlLink); } catch(e){} }, 1500);
-              }
-            } else if (jBody.job?.status === 'failed') {
-              clearInterval(check);
-              an.st = 'err';
-              an.errMsg = 'Download failed';
-              const jErr = jBody.job.error;
-              an.errDetail = (typeof jErr === 'string' ? jErr : jErr?.message) || 'Download could not be completed';
-              paint();
-              toast('Download failed');
-            }
-          })
-          .catch(() => {});
-        }, 600);
-        return;
-      }
-      const errMsg = (body.error && body.error.message) || body.message || 'No job created';
-      throw new Error(errMsg);
-    })
-    .catch((err) => {
-      an.st = 'err';
-      an.errMsg = 'Unable to start download';
-      an.errDetail = (err && err.message) || 'Check connection to backend server';
-      paint();
-      toast('Download failed');
-    });
-  };
+  const cancelBtn=$('#dl-cancel');if(cancelBtn)cancelBtn.onclick=()=>{if(dlPoll){clearInterval(dlPoll);dlPoll=null;}an.st='ready';paint();};
+  const d=$('#dlb');if(d)d.onclick=()=>startDownload(O);
 }
 
 function analyse(){
+  if (dlPoll) { clearInterval(dlPoll); dlPoll = null; }
   let v=$('#u').value.trim();
   if(!v)return;
   if(!/^https?:\/\//i.test(v)){v='https://'+v;}
@@ -249,10 +266,9 @@ function analyse(){
   
   let p=PL.find(p=>p.h.some(h=>u.hostname===h||u.hostname.endsWith('.'+h)));
   if(!p){
-    // Fallback platform object for any supported web URL
     p = { n: u.hostname.replace(/^www\./i, ''), c: 1, t: 'Media', h: [u.hostname], s: 'media' };
   }
-  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.st='load';an.realData=null;an.title='';an.thumbnail='';an.uploader='';an.dur='';an.errMsg='';an.errDetail='';paint();
+  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.altOpen=false;an.st='load';an.realData=null;an.title='';an.thumbnail='';an.uploader='';an.dur='';an.errMsg='';an.errDetail='';paint();
 
   // Connect to real backend /api/v1/inspect
   fetch('/api/v1/inspect', {
@@ -264,7 +280,6 @@ function analyse(){
     let body;
     try { body = await res.json(); } catch(e) { body = { error: { message: `Server returned status ${res.status}` } }; }
     if (res.ok && body.data && body.data.formats && body.data.formats.length > 0) {
-      an.st = 'ready';
       an.realData = body.data;
       an.title = body.data.title;
       an.thumbnail = body.data.thumbnail;
@@ -274,16 +289,21 @@ function analyse(){
         an.dur = `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
       }
       if (effectiveKind(an.p) === 'a') an.tab = 'a';
-      paint();
+      if (an.instant) {
+        startDownload();
+      } else {
+        an.st = 'ready';
+        paint();
+      }
     } else {
       an.st = 'err';
       const errObj = body.error || {};
       an.errMsg = errObj.code === 'AUTHORIZATION_REQUIRED' ? 'Private or Login-Protected' :
                    errObj.code === 'CONTENT_UNAVAILABLE' ? 'Media Not Found' :
                    errObj.code === 'SSRF_DETECTED' ? 'Blocked Address' :
-                   errObj.code === 'UNSUPPORTED_PLATFORM' ? 'Platform Not Supported' :
+                   errObj.code === 'UNSUPPORTED_PLATFORM' ? 'No Media Found' :
                    (typeof errObj.message === 'string' ? 'Media Unavailable' : (body.message || 'Media not found'));
-      an.errDetail = (typeof errObj === 'string' ? errObj : errObj.message) || body.message || 'Could not extract stream. Please verify the URL is public and available.';
+      an.errDetail = cleanErr((typeof errObj === 'string' ? errObj : errObj.message) || body.message);
       paint();
     }
   })
@@ -295,7 +315,7 @@ function analyse(){
   });
 }
 
-const anBar=ph=>`<div class="an"><label>${I('link',20)}<input id="u" type="url" placeholder="${ph||'Paste a video, audio or image link'}" aria-label="Media link" value="${an.st==='idle'?'':an.url}"></label><button class="btn k" id="go">Download ${I('arr')}</button></div><div id="res"></div>`;
+const anBar=ph=>`<div class="an"><label>${I('link',20)}<input id="u" type="url" placeholder="${ph||'Paste any social media, video, audio or image link'}" aria-label="Media link" value="${an.st==='idle'?'':an.url}"></label><button class="btn k" id="go">Download ${I('arr')}</button></div><div style="text-align:center;margin-top:10px"><label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mut);cursor:pointer;user-select:none"><input type="checkbox" id="inst" ${an.instant?'checked':''} style="accent-color:var(--ac)"> Instant download (auto-start best quality)</label></div><div id="res"></div>`;
 const CARDS=[['reel-0412.mp4','video','MP4','48 MB'],['live-set.mp3','audio','MP3','11 MB'],['photo-1089.jpg','image','JPG','3 MB'],['clip-final.mp4','video','MP4','92 MB'],['episode-12.m4a','audio','M4A','24 MB'],['poster.png','image','PNG','5 MB'],['highlight.mp4','video','MP4','64 MB'],['mixtape.mp3','audio','MP3','78 MB'],['banner.webp','image','WebP','2 MB'],['trailer.mp4','video','MP4','130 MB']];
 const MTN='<svg viewBox="0 0 100 60" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%"><path d="M0 60 28 25 45 42 66 14 100 52V60Z" fill="rgba(255,255,255,.2)"/><circle cx="76" cy="14" r="6" fill="rgba(255,255,255,.55)"/></svg>';
 const art=t=>t==='video'?`<div class="pv" style="background:#12294d">${I('play',26)}</div>`:t==='audio'?`<div class="pv" style="background:#0e1d38"><div class="bars">${Array.from({length:20},(_,i)=>`<i style="height:${30+Math.abs(Math.sin(i*.7))*70}%;animation-delay:${(i*.08).toFixed(2)}s"></i>`).join('')}</div></div>`:`<div class="pv" style="background:#1d4a7a">${MTN}</div>`;
@@ -353,7 +373,7 @@ function help(){
 }
 
 function bind(){
-  const go=$('#go');if(go){go.onclick=analyse;$('#u').onkeydown=e=>{if(e.key==='Enter')analyse()};paint()}
+  const go=$('#go');if(go){go.onclick=analyse;$('#u').onkeydown=e=>{if(e.key==='Enter')analyse()};const inst=$('#inst');if(inst)inst.onchange=()=>{an.instant=inst.checked};paint()}
   const ps=$('#ps');if(ps)ps.oninput=e=>{pq=e.target.value;const p=e.target.selectionStart;render();const s=$('#ps');s.focus();s.setSelectionRange(p,p)};
   const hs=$('#hs');if(hs)hs.oninput=e=>document.querySelectorAll('details').forEach(d=>d.style.display=d.textContent.toLowerCase().includes(e.target.value.toLowerCase())?'':'none');
   document.querySelectorAll('.tab[data-pc]').forEach(b=>b.onclick=()=>{pcat=b.dataset.pc==='All'?'All':+b.dataset.pc;render()});

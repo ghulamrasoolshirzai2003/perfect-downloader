@@ -198,7 +198,13 @@ export const PLATFORMS: PlatformDefinition[] = [
     limitations: ['Public Spotlight videos and shared stories. Chats are private and unsupported.'],
     color: '#facc15',
   }),
-  planned('threads', 'Threads', 'social', ['threads.net', 'threads.com'], 'No maintained open-source extractor is available yet.', '#a3a3a3'),
+  ytdlpRestricted('threads', 'Threads', 'social', ['threads.net', 'threads.com'], [], {
+    baseStatus: 'limited',
+    mediaTypes: ['video', 'image', 'thumbnail'],
+    operations: ['inspect', 'download_video', 'download_thumbnail'],
+    limitations: ['Public Threads posts, videos, and images.'],
+    color: '#a3a3a3',
+  }),
 
   // ── Video & streaming ────────────────────────────────────────────────────────────
   ytdlpRestricted('vimeo', 'Vimeo', 'video', ['vimeo.com', 'player.vimeo.com'], ['vimeo', 'vimeo:user', 'vimeo:channel', 'vimeo:album'], {
@@ -222,7 +228,7 @@ export const PLATFORMS: PlatformDefinition[] = [
   ytdlpRestricted('odysee', 'Odysee', 'video', ['odysee.com'], ['lbry', 'lbry:channel', 'lbry:playlist'], { color: '#e50054' }),
   ytdlpRestricted('likee', 'Likee', 'video', ['likee.video'], ['likee', 'likee:user'], { baseStatus: 'limited', color: '#ff4f81' }),
   ytdlpRestricted('streamable', 'Streamable', 'video', ['streamable.com'], ['Streamable'], { color: '#0f90fa' }),
-  planned('triller', 'Triller', 'video', ['triller.co'], 'Adapter not yet verified.', '#ff0050'),
+  ytdlpRestricted('triller', 'Triller', 'video', ['triller.co'], [], { baseStatus: 'limited', color: '#ff0050' }),
   planned('kuaishou', 'Kuaishou', 'video', ['kuaishou.com'], 'No maintained open-source extractor is available yet.', '#ff5000'),
   unavailable('dtube', 'DTube', 'video', ['d.tube'], 'The service is no longer operational.', '#ef4444'),
 
@@ -298,10 +304,30 @@ export const PLATFORMS: PlatformDefinition[] = [
     limitations: ['Public single images, GIFV animations, videos, and gallery posts.'],
     color: '#1bb76e',
   }),
-  planned('500px', '500px', 'image', ['500px.com'], 'Planned via an image-gallery adapter after licence review.', '#0099e5'),
-  planned('deviantart', 'DeviantArt', 'image', ['deviantart.com'], 'Planned via an image-gallery adapter after licence review.', '#05cc47'),
-  planned('giphy', 'Giphy', 'image', ['giphy.com'], 'Planned via the official Giphy API (requires an API key).', '#a855f7'),
-  planned('tenor', 'Tenor', 'image', ['tenor.com'], 'Planned via the official Tenor API (requires an API key).', '#3b82f6'),
+  ytdlpRestricted('500px', '500px', 'image', ['500px.com'], [], {
+    baseStatus: 'limited',
+    mediaTypes: ['image', 'thumbnail'],
+    operations: ['inspect', 'download_thumbnail'],
+    color: '#0099e5',
+  }),
+  ytdlpRestricted('deviantart', 'DeviantArt', 'image', ['deviantart.com'], [], {
+    baseStatus: 'limited',
+    mediaTypes: ['video', 'image', 'thumbnail'],
+    operations: ['inspect', 'download_video', 'download_thumbnail'],
+    color: '#05cc47',
+  }),
+  ytdlpRestricted('giphy', 'Giphy', 'image', ['giphy.com', 'media.giphy.com'], [], {
+    baseStatus: 'available',
+    mediaTypes: ['video', 'image', 'thumbnail'],
+    operations: ['inspect', 'download_video', 'download_thumbnail'],
+    color: '#a855f7',
+  }),
+  ytdlpRestricted('tenor', 'Tenor', 'image', ['tenor.com', 'media.tenor.com'], [], {
+    baseStatus: 'available',
+    mediaTypes: ['video', 'image', 'thumbnail'],
+    operations: ['inspect', 'download_video', 'download_thumbnail'],
+    color: '#3b82f6',
+  }),
 ];
 
 function ytdlpRestricted(

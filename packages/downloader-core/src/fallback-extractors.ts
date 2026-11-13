@@ -1,5 +1,5 @@
 import type { MediaStreamFormat } from '@pd/shared';
-import { safeFetch, safeFetchJson, safeFetchText } from './http-safe';
+import { safeFetch, safeFetchJson, safeFetchText, safeProbeUrl } from './http-safe';
 
 export interface FallbackFormat {
   formatId: string;
@@ -81,10 +81,7 @@ export function toPublicMediaFormats(formats: FallbackFormat[]): MediaStreamForm
 
 type FallbackAdapter = (url: string, signal?: AbortSignal) => Promise<FallbackExtractResult | null>;
 
-/**
- * TikTok fallback via public TikWM API + page HTML (covers standard videos & photo slideshows)
- */
-async function extractTikTokFallback(url: string, signal?: AbortSignal): Promise<FallbackExtractResult | null> {
+async function tryTikWmSingle(url: string, signal?: AbortSignal): Promise<FallbackExtractResult | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const { data } = await safeFetchJson<any>(
@@ -92,7 +89,7 @@ async function extractTikTokFallback(url: string, signal?: AbortSignal): Promise
         { signal, timeoutMs: 15_000 },
       );
       if (data?.code === -1 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 1200));
+        await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
       if (data?.code === 0 && data?.data) {
@@ -163,15 +160,140 @@ async function extractTikTokFallback(url: string, signal?: AbortSignal): Promise
       break;
     } catch {
       if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 700));
         continue;
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * TikTok fallback: handles single videos, photo slideshows, short links, and @user profiles via TikWM + TikTok Embed state.
+ */
+async function extractTikTokFallback(url: string, signal?: AbortSignal): Promise<FallbackExtractResult | null> {
+  let workUrl = url;
+  try {
+    const parsed = new URL(url);
+    if (/^(?:vm|vt)\.tiktok\.com$/i.test(parsed.hostname) || /^\/t\//i.test(parsed.pathname)) {
+      const probed = await safeProbeUrl(url, { signal, timeoutMs: 10_000 });
+      if (probed.finalUrl) workUrl = probed.finalUrl;
+    }
+  } catch {
+    // keep original
+  }
+
+  // Profile / user URL e.g. https://www.tiktok.com/@bollywood2334
+  const userMatch = /tiktok\.com\/(?:embed\/)?@([A-Za-z0-9_.-]+)(?:\/?(?:\?.*)?$)/i.exec(workUrl);
+  if (userMatch?.[1] && !/\/(?:video|photo)\//i.test(workUrl)) {
+    const username = userMatch[1];
+    try {
+      const { text } = await safeFetchText(`https://www.tiktok.com/embed/@${encodeURIComponent(username)}`, {
+        signal,
+        timeoutMs: 15_000,
+      });
+      const stateMatch = /<script id="__FRONTITY_CONNECT_STATE__"[^>]*>([\s\S]*?)<\/script>/i.exec(text);
+      if (stateMatch?.[1]) {
+        const state = JSON.parse(stateMatch[1]);
+        const sd = state?.source?.data || {};
+        const routeKey = Object.keys(sd).find((k) => Array.isArray(sd[k]?.videoList) && sd[k].videoList.length > 0);
+        const profile = routeKey ? sd[routeKey] : null;
+        const videoList: any[] = profile?.videoList || [];
+        const userInfo = profile?.userInfo || {};
+
+        if (videoList.length > 0) {
+          const v0 = videoList[0];
+          const firstPostUrl = `https://www.tiktok.com/@${v0.authorUniqueId || username}/video/${v0.id}`;
+          const twFirst = await tryTikWmSingle(firstPostUrl, signal);
+          const formats: FallbackFormat[] = [];
+
+          if (twFirst?.formats?.length) {
+            formats.push(...twFirst.formats);
+          }
+
+          videoList.slice(0, 6).forEach((v, idx) => {
+            if (!v?.playAddr || typeof v.playAddr !== 'string') return;
+            const res = v.width && v.height ? `${v.width}x${v.height}` : undefined;
+            const label = twFirst?.formats?.length && idx === 0
+              ? `Direct Stream (${v.ratio || 'MP4'})`
+              : `Video #${idx + 1}${v.ratio ? ` (${v.ratio})` : ''}${v.desc ? ` - ${String(v.desc).replace(/\s+/g, ' ').trim().slice(0, 28)}` : ''}`;
+            formats.push({
+              formatId: `fb:v_post${idx}`,
+              ext: 'mp4',
+              directUrl: v.playAddr,
+              headers: { referer: 'https://www.tiktok.com/' },
+              resolution: res,
+              width: v.width ? Number(v.width) : undefined,
+              height: v.height ? Number(v.height) : undefined,
+              qualityLabel: label,
+              hasVideo: true,
+              hasAudio: true,
+              isAudioOnly: false,
+              isVideoOnly: false,
+            });
+          });
+
+          if (formats.length > 0) {
+            return {
+              canonicalUrl: firstPostUrl,
+              title: twFirst?.title || v0.desc || `${userInfo.nickname || username} - TikTok Video`,
+              thumbnail: twFirst?.thumbnail || v0.originCoverUrl || v0.coverUrl || userInfo.avatarLarger,
+              uploader: userInfo.nickname || username,
+              uploaderUrl: `https://www.tiktok.com/@${username}`,
+              duration: twFirst?.duration,
+              formats,
+            };
+          }
+        }
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  // Single TikTok video / photo slideshow via TikWM
+  const tw = await tryTikWmSingle(workUrl, signal);
+  if (tw) return tw;
+
+  // Backup: TikTok embed/v2/{id}
+  const vidMatch = /\/(?:video|photo)\/(\d+)/i.exec(workUrl);
+  if (vidMatch?.[1]) {
+    try {
+      const { text } = await safeFetchText(`https://www.tiktok.com/embed/v2/${vidMatch[1]}`, {
+        signal,
+        timeoutMs: 12_000,
+      });
+      const playMatch = /"playAddr":"([^"]+)"/.exec(text);
+      if (playMatch?.[1]) {
+        const directUrl = unescapeJsonUrl(playMatch[1]);
+        const meta = extractMetaTags(text);
+        return {
+          canonicalUrl: workUrl,
+          title: meta['og:title']?.[0] || extractHtmlTitle(text) || 'TikTok Video',
+          thumbnail: meta['og:image']?.[0],
+          formats: [
+            {
+              formatId: 'fb:v0',
+              ext: 'mp4',
+              directUrl,
+              headers: { referer: 'https://www.tiktok.com/' },
+              qualityLabel: 'HD MP4',
+              hasVideo: true,
+              hasAudio: true,
+              isAudioOnly: false,
+              isVideoOnly: false,
+            },
+          ],
+        };
+      }
+    } catch {
+      // ignore
     }
   }
 
   // Secondary HTML OpenGraph check
   try {
-    const { text, url: finalUrl } = await safeFetchText(url, { signal, timeoutMs: 12_000 });
+    const { text, url: finalUrl } = await safeFetchText(workUrl, { signal, timeoutMs: 12_000 });
     const meta = extractMetaTags(text);
     const ogVideo = meta['og:video:secure_url']?.[0] || meta['og:video']?.[0];
     if (ogVideo) {
@@ -2315,6 +2437,248 @@ async function extractBandcampFallback(url: string, signal?: AbortSignal): Promi
   return null;
 }
 
+/**
+ * Threads (threads.net / threads.com) public post fallback extractor
+ */
+async function extractThreadsFallback(url: string, signal?: AbortSignal): Promise<FallbackExtractResult | null> {
+  const userAgents = [
+    'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+    'facebookexternalhit/1.1',
+  ];
+  for (const ua of userAgents) {
+    try {
+      const { text, url: finalUrl } = await safeFetchText(url, {
+        signal,
+        timeoutMs: 15_000,
+        headers: { 'user-agent': ua },
+      });
+      const formats: FallbackFormat[] = [];
+      const seen = new Set<string>();
+      const pushFmt = (rawUrl: string, kind: 'video' | 'image', label: string, ext: string) => {
+        const clean = unescapeJsonUrl(rawUrl);
+        if (!clean.startsWith('http') || seen.has(clean)) return;
+        seen.add(clean);
+        formats.push({
+          formatId: `fb:${kind === 'video' ? 'v' : 'img'}${formats.length}`,
+          ext,
+          directUrl: clean,
+          qualityLabel: label,
+          hasVideo: kind === 'video',
+          hasAudio: kind === 'video',
+          isAudioOnly: false,
+          isVideoOnly: false,
+        });
+      };
+
+      const meta = extractMetaTags(text);
+      for (const v of [...(meta['og:video:secure_url'] || []), ...(meta['og:video'] || [])]) {
+        pushFmt(v, 'video', 'HD MP4', 'mp4');
+      }
+
+      const vidRe = /"video_versions"\s*:\s*\[([^\]]+)\]/g;
+      let m: RegExpExecArray | null;
+      while ((m = vidRe.exec(text)) !== null) {
+        const block = m[1] || '';
+        const urlM = /"url"\s*:\s*"([^"]+)"/.exec(block);
+        if (urlM?.[1]) pushFmt(urlM[1], 'video', 'HD MP4', 'mp4');
+      }
+
+      const candRe = /"candidates"\s*:\s*\[([^\]]+)\]/g;
+      while ((m = candRe.exec(text)) !== null) {
+        const block = m[1] || '';
+        const urlM = /"url"\s*:\s*"([^"]+)"/.exec(block);
+        if (urlM?.[1] && !/150x150|s150x150/i.test(urlM[1])) {
+          pushFmt(urlM[1], 'image', 'Original Image', 'jpg');
+        }
+      }
+
+      if (formats.length === 0) {
+        for (const img of [...(meta['og:image:secure_url'] || []), ...(meta['og:image'] || [])]) {
+          if (!/static\.cdninstagram|rsrc\.php/i.test(img)) {
+            pushFmt(img, 'image', 'Original Image', 'jpg');
+          }
+        }
+      }
+
+      if (formats.length > 0) {
+        return {
+          canonicalUrl: finalUrl,
+          title: meta['og:title']?.[0] || extractHtmlTitle(text) || 'Threads Post',
+          description: meta['og:description']?.[0],
+          thumbnail: meta['og:image']?.[0],
+          formats,
+        };
+      }
+    } catch {
+      // try next UA
+    }
+  }
+  return null;
+}
+
+/**
+ * Universal fallback extractor for direct media files (.mp4, .mp3, .jpg, .m3u8) and any HTML page
+ * exposing OpenGraph, JSON-LD VideoObject/AudioObject/ImageObject, or HTML5 <video>/<audio> tags.
+ */
+export async function extractGenericFallback(url: string, signal?: AbortSignal): Promise<FallbackExtractResult | null> {
+  // 1. Direct media / CDN file check via HEAD / 1-byte probe
+  try {
+    const probe = await safeProbeUrl(url, { signal, timeoutMs: 12_000 });
+    const ct = probe.contentType || '';
+    const finalUrl = probe.finalUrl || url;
+    const isMediaCt =
+      ct.startsWith('video/') ||
+      ct.startsWith('audio/') ||
+      ct.startsWith('image/') ||
+      ct === 'application/vnd.apple.mpegurl' ||
+      ct === 'application/x-mpegurl';
+    if (probe.status >= 200 && probe.status < 400 && isMediaCt) {
+      const extFromCt =
+        ct === 'image/jpeg' ? 'jpg' :
+        ct === 'image/png' ? 'png' :
+        ct === 'image/webp' ? 'webp' :
+        ct === 'image/gif' ? 'gif' :
+        ct === 'audio/mpeg' ? 'mp3' :
+        ct === 'audio/mp4' ? 'm4a' :
+        ct === 'audio/ogg' ? 'ogg' :
+        ct === 'audio/wav' ? 'wav' :
+        ct === 'video/webm' ? 'webm' :
+        ct.includes('mpegurl') ? 'mp4' :
+        'mp4';
+      const isVideo = ct.startsWith('video/') || ct.includes('mpegurl');
+      const isAudio = ct.startsWith('audio/');
+      const isHls = ct.includes('mpegurl') || /\.m3u8(?:$|\?)/i.test(finalUrl);
+      const urlName = decodeURIComponent(new URL(finalUrl).pathname.split('/').pop() || 'Media File').replace(/\.[^.]+$/, '');
+      return {
+        canonicalUrl: finalUrl,
+        title: urlName || 'Direct Media File',
+        formats: [
+          {
+            formatId: 'fb:direct0',
+            ext: extFromCt,
+            directUrl: finalUrl,
+            isHls,
+            filesize: probe.contentLength,
+            qualityLabel: isAudio ? `Original ${extFromCt.toUpperCase()}` : isVideo ? `Original ${extFromCt.toUpperCase()}` : `Original ${extFromCt.toUpperCase()}`,
+            hasVideo: isVideo,
+            hasAudio: isVideo || isAudio,
+            isAudioOnly: isAudio,
+            isVideoOnly: false,
+          },
+        ],
+      };
+    }
+  } catch {
+    // proceed to HTML parse
+  }
+
+  // 2. HTML page scrape (OpenGraph + JSON-LD + <video>/<audio>/<source> + embedded .mp4/.m3u8 links)
+  try {
+    const { status, text, url: finalUrl, contentType } = await safeFetchText(url, { signal, timeoutMs: 15_000 });
+    if (status >= 400 || !contentType.toLowerCase().includes('html')) return null;
+
+    const formats: FallbackFormat[] = [];
+    const seen = new Set<string>();
+    const addFmt = (rawSrc: string, kind: 'video' | 'audio' | 'image', label: string, extOverride?: string) => {
+      let abs = decodeHtmlEntities(rawSrc.trim());
+      if (!abs) return;
+      try {
+        abs = new URL(abs, finalUrl).toString();
+      } catch {
+        return;
+      }
+      if (!/^https?:\/\//i.test(abs) || seen.has(abs)) return;
+      seen.add(abs);
+      const isHls = /\.m3u8(?:$|\?)/i.test(abs);
+      const extMatch = /\.([a-z0-9]{2,5})(?:$|\?|#)/i.exec(abs);
+      const guessedExt = extOverride || (isHls ? 'mp4' : (extMatch?.[1]?.toLowerCase() === 'jpeg' ? 'jpg' : extMatch?.[1]?.toLowerCase()) || (kind === 'audio' ? 'mp3' : kind === 'image' ? 'jpg' : 'mp4'));
+      formats.push({
+        formatId: `fb:${kind === 'video' ? 'v' : kind === 'audio' ? 'a' : 'img'}${formats.length}`,
+        ext: guessedExt,
+        directUrl: abs,
+        headers: { referer: finalUrl },
+        isHls,
+        qualityLabel: label,
+        hasVideo: kind === 'video',
+        hasAudio: kind === 'video' || kind === 'audio',
+        isAudioOnly: kind === 'audio',
+        isVideoOnly: false,
+      });
+    };
+
+    const meta = extractMetaTags(text);
+    for (const v of [
+      ...(meta['og:video:secure_url'] || []),
+      ...(meta['og:video:url'] || []),
+      ...(meta['og:video'] || []),
+      ...(meta['twitter:player:stream'] || []),
+    ]) {
+      if (/\.(?:mp4|webm|m3u8|mov)(?:$|\?)/i.test(v) || /video/i.test(meta['og:video:type']?.[0] || '')) {
+        addFmt(v, 'video', 'HD MP4');
+      }
+    }
+
+    for (const a of [...(meta['og:audio:secure_url'] || []), ...(meta['og:audio'] || [])]) {
+      addFmt(a, 'audio', 'Original Audio');
+    }
+
+    const ldRe = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let ldM: RegExpExecArray | null;
+    while ((ldM = ldRe.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(ldM[1] || '{}');
+        const nodes = Array.isArray(parsed) ? parsed : [parsed];
+        for (const n of nodes) {
+          const t = String(n?.['@type'] || '').toLowerCase();
+          if (typeof n?.contentUrl === 'string') {
+            addFmt(n.contentUrl, t.includes('audio') ? 'audio' : t.includes('image') ? 'image' : 'video', t.includes('audio') ? 'Audio' : t.includes('image') ? 'Image' : 'HD Video');
+          }
+        }
+      } catch {
+        // ignore invalid JSON-LD
+      }
+    }
+
+    const tagMediaRe = /<(?:video|source|audio)[^>]+src=["']([^"']+)["']/gi;
+    let tm: RegExpExecArray | null;
+    while ((tm = tagMediaRe.exec(text)) !== null) {
+      if (tm[1]) {
+        const isAud = /\.(?:mp3|m4a|ogg|wav|opus)(?:$|\?)/i.test(tm[1]);
+        addFmt(tm[1], isAud ? 'audio' : 'video', isAud ? 'Audio Stream' : 'Video Stream');
+      }
+    }
+
+    if (formats.length === 0) {
+      const jsonVideoRe = /"(?:contentUrl|videoUrl|video_url|mp4Url|playbackUrl|playAddr|src)"\s*:\s*"(https?:\\?\/\\?\/[^"]+\.(?:mp4|m3u8)[^"]*)"/gi;
+      let jm: RegExpExecArray | null;
+      while ((jm = jsonVideoRe.exec(text)) !== null) {
+        if (jm[1]) addFmt(unescapeJsonUrl(jm[1]), 'video', 'HD MP4');
+      }
+    }
+
+    if (formats.length === 0) {
+      for (const img of [...(meta['og:image:secure_url'] || []), ...(meta['og:image'] || []), ...(meta['twitter:image'] || [])]) {
+        if (!/logo|favicon|icon|avatar/i.test(img)) {
+          addFmt(img, 'image', 'Original Image');
+        }
+      }
+    }
+
+    if (formats.length > 0) {
+      return {
+        canonicalUrl: finalUrl,
+        title: meta['og:title']?.[0] || extractHtmlTitle(text) || 'Media File',
+        description: meta['og:description']?.[0],
+        thumbnail: meta['og:image']?.[0],
+        formats,
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 const FALLBACK_ADAPTERS: Record<string, FallbackAdapter> = {
   tiktok: extractTikTokFallback,
   instagram: extractInstagramFallback,
@@ -2328,6 +2692,7 @@ const FALLBACK_ADAPTERS: Record<string, FallbackAdapter> = {
   snapchat: extractSnapchatFallback,
   vk: extractVkFallback,
   weibo: extractWeiboFallback,
+  threads: extractThreadsFallback,
   vimeo: extractVimeoFallback,
   dailymotion: extractDailymotionFallback,
   rumble: extractRumbleFallback,
@@ -2340,6 +2705,12 @@ const FALLBACK_ADAPTERS: Record<string, FallbackAdapter> = {
   imgur: extractImgurFallback,
   telegram: extractTelegramFallback,
   bandcamp: extractBandcampFallback,
+  giphy: extractGenericFallback,
+  tenor: extractGenericFallback,
+  triller: extractGenericFallback,
+  '500px': extractGenericFallback,
+  deviantart: extractGenericFallback,
+  generic: extractGenericFallback,
 };
 
 const FALLBACK_CACHE = new Map<string, { expiresAt: number; result: FallbackExtractResult }>();
