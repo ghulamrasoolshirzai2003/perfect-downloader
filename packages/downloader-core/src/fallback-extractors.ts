@@ -26,6 +26,8 @@ export interface FallbackExtractResult {
   thumbnail?: string;
   uploader?: string;
   uploaderUrl?: string;
+  viewCount?: number;
+  likeCount?: number;
   formats: FallbackFormat[];
 }
 
@@ -487,11 +489,60 @@ async function extractFacebookFallback(url: string, signal?: AbortSignal): Promi
       }
 
       if (formats.length > 0) {
+        const rawOgTitle = (meta['og:title']?.[0] || extractHtmlTitle(text) || '').trim();
+        const rawOgDesc = (meta['og:description']?.[0] || '').trim();
+        const parseCountStr = (s?: string): number | undefined => {
+          if (!s) return undefined;
+          const m = /^([\d,.]+)\s*([KMB])?$/i.exec(s.trim());
+          if (!m?.[1]) return undefined;
+          const base = Number(m[1].replace(/,/g, ''));
+          if (!Number.isFinite(base)) return undefined;
+          const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
+          return Math.round(base * mult);
+        };
+
+        const viewMatch = /\b([\d.,]+[KMB]?)\s+views?\b/i.exec(rawOgTitle) || /\b([\d.,]+[KMB]?)\s+views?\b/i.exec(rawOgDesc);
+        const likeMatch = /\b([\d.,]+[KMB]?)\s+(?:reactions?|likes?)\b/i.exec(rawOgTitle) || /\b([\d.,]+[KMB]?)\s+(?:reactions?|likes?)\b/i.exec(rawOgDesc);
+        const durMsMatch = /"playable_duration_in_ms"\s*:\s*(\d+)/.exec(text);
+        const ownerMatch = /"owning_profile"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/.exec(text) || /"owner"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/.exec(text);
+        const vidW = Number(meta['og:video:width']?.[0] || 0) || undefined;
+        const vidH = Number(meta['og:video:height']?.[0] || 0) || undefined;
+        if (vidW && vidH) {
+          for (const f of formats) {
+            if (f.hasVideo && !f.width && !f.height) {
+              f.width = vidW;
+              f.height = vidH;
+            }
+          }
+        }
+
+        const decodeUnicodeEscapes = (s: string) =>
+          s.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+
+        let cleanedBody = rawOgTitle.replace(/^\s*(?:[\d.,]+[KMB]?\s+(?:views?|reactions?|likes?)(?:\s*[·•,]\s*)?)+\s*\|\s*/i, '').trim();
+        let parsedUploader: string | undefined = ownerMatch?.[1] ? decodeUnicodeEscapes(ownerMatch[1]) : undefined;
+        const pipeParts = cleanedBody.split(/\s+\|\s+/).map((x) => x.trim()).filter(Boolean);
+        if (pipeParts.length >= 2) {
+          const tail = pipeParts[pipeParts.length - 1]!;
+          if (tail.length <= 60 && !/^facebook$/i.test(tail)) {
+            if (!parsedUploader) parsedUploader = tail;
+            cleanedBody = pipeParts.slice(0, -1).join(' | ');
+          }
+        }
+        cleanedBody = cleanedBody.replace(/\s*\|\s*Facebook\s*$/i, '').trim();
+        const fullDesc = rawOgDesc && rawOgDesc.length > cleanedBody.length ? rawOgDesc : cleanedBody;
+        const firstSentence = (cleanedBody || rawOgTitle || 'Facebook Media').split(/(?<=[.!?])\s+|\n+/)[0]?.trim() || '';
+        const conciseTitle = (firstSentence.length >= 12 ? firstSentence : cleanedBody || rawOgTitle || 'Facebook Media').slice(0, 120);
+
         return {
           canonicalUrl: finalUrl,
-          title: meta['og:title']?.[0] || extractHtmlTitle(text) || 'Facebook Media',
-          description: meta['og:description']?.[0],
+          title: conciseTitle || 'Facebook Media',
+          description: fullDesc || undefined,
+          duration: durMsMatch?.[1] ? Math.round(Number(durMsMatch[1]) / 1000) : undefined,
           thumbnail: ogImg ? decodeHtmlEntities(ogImg) : undefined,
+          uploader: parsedUploader,
+          viewCount: parseCountStr(viewMatch?.[1]),
+          likeCount: parseCountStr(likeMatch?.[1]),
           formats,
         };
       }

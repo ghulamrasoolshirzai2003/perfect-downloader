@@ -145,7 +145,10 @@ export async function safeProbeUrl(
       }
 
       const ct = (resp.headers.get('content-type') || '').split(';')[0]?.trim().toLowerCase() || '';
-      const cl = Number(resp.headers.get('content-length') || 0) || undefined;
+      const cr = resp.headers.get('content-range') || '';
+      const crMatch = /\/(\d+)\s*$/i.exec(cr);
+      const rawCl = Number(resp.headers.get('content-length') || 0) || undefined;
+      const cl = crMatch?.[1] ? Number(crMatch[1]) : (resp.status === 206 ? undefined : rawCl);
       await resp.body?.cancel().catch(() => {});
       return { finalUrl: safeUrl.toString(), status: resp.status, contentType: ct, contentLength: cl };
     } finally {

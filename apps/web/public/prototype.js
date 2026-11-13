@@ -33,7 +33,7 @@ const effectiveKind=p=>{
   }
   return kindOf(p);
 };
-let pcat='All',pq='',pending=null,dlPoll=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30',altOpen:false,speed:'',eta:'',outputFileSize:0,chosenLabel:'',chosenSize:''};
+let pcat='All',pq='',pending=null,dlPoll=null,an={st:'idle',url:'',p:null,tab:'v',opt:0,clip:false,a:'00:00',b:'00:30',altOpen:false,detailsOpen:false,speed:'',eta:'',outputFileSize:0,chosenLabel:'',chosenSize:''};
 const $=s=>document.querySelector(s),esc=s=>{if(s==null)return'';const str=typeof s==='object'?String(s.message||s.code||JSON.stringify(s)):String(s);return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');};
 const cleanErr=m=>{let s=String(m||'Could not extract downloadable media from this link. Make sure the post or file is public and try again.');if(/media inspection failed:|error:\s*\[|tiktokuser:|please report this issue/i.test(s))return 'Could not extract downloadable media from this link. Try a direct post/video link or make sure it is public.';return s;};
 const toast=m=>{const t=$('#toast');t.innerHTML=I('check')+m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('on'),2200)};
@@ -58,26 +58,25 @@ function optsFor(){
     }
     const isAudioTab = (an.tab === 'a' || k === 'a');
     if (isAudioTab) {
-      const dur = an.realData.duration || 180;
-      const sz320 = Math.max(1, Math.round(dur * 320 / (8 * 1024)));
-      const sz192 = Math.max(1, Math.round(dur * 192 / (8 * 1024)));
-      const sz128 = Math.max(1, Math.round(dur * 128 / (8 * 1024)));
+      const realDur = an.realData.duration;
+      const mbEst = kbps => realDur ? `~${Math.max(1, Math.round(realDur * kbps / (8 * 1024)))} MB` : '';
       const usesFallback = fmts.every(f => String(f.formatId).startsWith('fb:'));
       const bestAudio = fmts.find(f => f.isAudioOnly) || fmts.find(f => f.hasAudio) || fmts[0];
       const origExt = (bestAudio && bestAudio.ext ? bestAudio.ext : 'm4a').toLowerCase();
       if (usesFallback && bestAudio) {
-        const opts = [['MP3 192 kbps', fmtSize(bestAudio.filesize || bestAudio.filesizeApprox, `~${sz192} MB`), 1, bestAudio.formatId, 'mp3', 'Converted MP3 audio · 192 kbps']];
+        const probedSz = fmtSize(bestAudio.filesize || bestAudio.filesizeApprox, '');
+        const opts = [['MP3 192 kbps', mbEst(192) || 'MP3 Audio', 1, bestAudio.formatId, 'mp3', 'Converted MP3 · 192 kbps audio']];
         if (origExt !== 'mp4' && origExt !== 'mp3') {
-          opts.push([`Original ${origExt.toUpperCase()}`, fmtSize(bestAudio.filesize || bestAudio.filesizeApprox, `~${sz128} MB`), 0, bestAudio.formatId, origExt, `Source audio stream · ${origExt.toUpperCase()}`]);
+          opts.push([`Original ${origExt.toUpperCase()}`, probedSz || mbEst(128) || `${origExt.toUpperCase()} Audio`, 0, bestAudio.formatId, origExt, `Source audio · ${origExt.toUpperCase()}`]);
         }
         return opts;
       }
       const origAudioId = (bestAudio && bestAudio.isAudioOnly) ? bestAudio.formatId : 'bestaudio/best';
       const origAudioExt = (bestAudio && bestAudio.isAudioOnly && bestAudio.ext) ? bestAudio.ext.toLowerCase() : 'm4a';
       return [
-        ['MP3 320 kbps', `~${sz320} MB`, 1, 'bestaudio/best', 'mp3', 'High-bitrate MP3 · 320 kbps'],
-        ['MP3 192 kbps', `~${sz192} MB`, 0, 'bestaudio/best', 'mp3', 'Standard MP3 · 192 kbps'],
-        [`Original ${origAudioExt.toUpperCase()}`, fmtSize(bestAudio && (bestAudio.filesize || bestAudio.filesizeApprox), `~${sz128} MB`), 0, origAudioId, origAudioExt, `Native audio stream · ${origAudioExt.toUpperCase()}`]
+        ['MP3 320 kbps', mbEst(320) || 'High quality', 1, 'bestaudio/best', 'mp3', 'High-bitrate MP3 · 320 kbps'],
+        ['MP3 192 kbps', mbEst(192) || 'Standard', 0, 'bestaudio/best', 'mp3', 'Standard MP3 · 192 kbps'],
+        [`Original ${origAudioExt.toUpperCase()}`, fmtSize(bestAudio && (bestAudio.filesize || bestAudio.filesizeApprox), mbEst(128) || `${origAudioExt.toUpperCase()} Audio`), 0, origAudioId, origAudioExt, `Native audio track · ${origAudioExt.toUpperCase()}`]
       ];
     } else {
       const videoFormats = fmts.filter(f => f.hasVideo);
@@ -123,8 +122,10 @@ function optsFor(){
         const dims = (f.width && f.height) ? `${f.width} × ${f.height}` : (f.resolution || '');
         const fpsStr = f.fps && f.fps > 30 ? `${Math.round(f.fps)} fps` : '';
         const vcodec = f.vcodec && f.vcodec !== 'none' ? f.vcodec.split('.')[0].toUpperCase() : '';
-        const spec = [dims, fpsStr, vcodec, outExt.toUpperCase() + ' + Audio'].filter(Boolean).join(' · ');
-        return [label, szStr || 'Stream', idx === 0 ? 1 : 0, f.formatId, outExt, spec];
+        const qualityHint = !dims ? (/1080|hd/i.test(label) ? 'Full HD video' : (/sd/i.test(label) ? 'Standard video' : 'Original quality')) : '';
+        const spec = [dims || qualityHint, fpsStr, vcodec, outExt.toUpperCase() + ' + Audio'].filter(Boolean).join(' · ');
+        const sizeBadge = szStr || `${outExt.toUpperCase()} File`;
+        return [label, sizeBadge, idx === 0 ? 1 : 0, f.formatId, outExt, spec];
       });
     }
   }
@@ -144,9 +145,9 @@ function startDownload(O){
   an.speed = '';
   an.eta = '';
   an.chosenLabel = (chosen && chosen[0]) || 'Best available';
-  an.chosenSize = (chosen && chosen[1]) || '';
+  an.chosenSize = (chosen && chosen[1] && !/File$|Audio$|quality$|Original$/i.test(chosen[1])) ? chosen[1] : '';
   an.outputFileSize = 0;
-  paint();
+  updateRightCard(opts);
 
   const k = effectiveKind(an.p);
   const formatId = (chosen && chosen[3]) || 'best';
@@ -243,7 +244,7 @@ function pickerHtmlFor(k, O){
   const optsList = `<div class="opts" role="radiogroup">${O.map((o,i)=>`<button class="o ${i===an.opt?'on':''}" data-o="${i}" role="radio" aria-checked="${i===an.opt}"><span style="display:flex;align-items:center;min-width:0"><i class="r" style="flex:none"></i><span class="ol"><span>${esc(o[0])}${o[2]?'<span class="best">BEST</span>':''}</span>${o[5]?`<span class="osub">${esc(o[5])}</span>`:''}</span></span><span class="mono" style="flex:none;margin-left:12px">${esc(o[1])}</span></button>`).join('')}</div>`;
   const clipBox = k==='i' ? '' : `<div class="clip"><label><input type="checkbox" id="cl" ${an.clip?'checked':''}> Download only a section</label>${an.clip?`<input class="ip" id="ca" value="${esc(an.a)}" aria-label="Start"><span class="mono">to</span><input class="ip" id="cb" value="${esc(an.b)}" aria-label="End">`:''}</div>`;
   const sel = O[an.opt] || O[0];
-  const ctaSize = sel && sel[1] && sel[1] !== 'Stream' ? ` · ${sel[1]}` : '';
+  const ctaSize = (sel && sel[1] && /\d/.test(sel[1]) && !/Audio$/i.test(sel[1])) ? ` · ${sel[1]}` : '';
   return `${tabs}${optsList}${clipBox}<button class="btn k" id="dlb" style="width:100%;margin-top:16px;height:52px;font-size:15px">${I('dl')} Download ${esc(sel?sel[0]:'Media')}${esc(ctaSize)}</button>`;
 }
 
@@ -259,26 +260,87 @@ function detailsCardHtml(k){
   const fmtsCount = Array.isArray(rd.formats) ? rd.formats.length : 0;
   const origUrl = rd.canonicalUrl || an.url;
 
+  const rawTitle = (an.title || 'Media File').replace(/^\s*(?:[\d.,]+[KMB]?\s+(?:views?|reactions?|likes?)(?:\s*[·•,]\s*)?)+\s*\|\s*/i, '').trim() || 'Media File';
+  const rawDesc = (rd.description || '').trim();
+  const hasDistinctDesc = Boolean(rawDesc && rawDesc.toLowerCase() !== rawTitle.toLowerCase());
+
   const thmBlock = an.thumbnail
-    ? `<img src="${esc(an.thumbnail)}" referrerpolicy="no-referrer" alt="" onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='grid'"><span style="display:none;place-items:center;width:100%;height:100%">${I(k==='a'?'audio':k==='i'?'image':'play',40)}</span>`
-    : `${I(k==='a'?'audio':k==='i'?'image':'play',40)}`;
+    ? `<img class="thm-bg" src="${esc(an.thumbnail)}" referrerpolicy="no-referrer" alt="" aria-hidden="true" onerror="this.style.display='none'"><img class="thm-fg" src="${esc(an.thumbnail)}" referrerpolicy="no-referrer" alt="" onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='grid'"><span style="display:none;place-items:center;width:100%;height:190px;z-index:1">${I(k==='a'?'audio':k==='i'?'image':'play',40)}</span>`
+    : `<span style="display:grid;place-items:center;width:100%;height:190px">${I(k==='a'?'audio':k==='i'?'image':'play',40)}</span>`;
 
-  const metaItems = [
-    `<div class="dlmi"><span>Platform</span><b>${esc(p.n)}</b></div>`,
-    an.uploader ? `<div class="dlmi"><span>Creator / Channel</span>${rd.uploaderUrl ? `<a href="${esc(rd.uploaderUrl)}" target="_blank" rel="noopener noreferrer">${esc(an.uploader)}</a>` : `<b>${esc(an.uploader)}</b>`}</div>` : `<div class="dlmi"><span>Creator</span><b>Public post</b></div>`,
-    `<div class="dlmi"><span>${k==='i'?'Type':'Length'}</span><b>${esc(k==='i'?'Image':(durStr || 'Media stream'))}</b></div>`,
-    upDateStr ? `<div class="dlmi"><span>Published</span><b>${esc(upDateStr)}</b></div>` : `<div class="dlmi"><span>Formats found</span><b>${fmtsCount || optsFor().length} options</b></div>`,
-  ];
-  if (viewsStr) metaItems.push(`<div class="dlmi"><span>Views</span><b>${esc(viewsStr)}</b></div>`);
-  if (likesStr) metaItems.push(`<div class="dlmi"><span>Likes</span><b>${esc(likesStr)}</b></div>`);
-  if (subSummary) metaItems.push(`<div class="dlmi"><span>Subtitles</span><b>${esc(subSummary)}</b></div>`);
-  if (origUrl) metaItems.push(`<div class="dlmi"><span>Source link</span><a href="${esc(origUrl)}" target="_blank" rel="noopener noreferrer">Open original ${I('ext',12)}</a></div>`);
+  const chips = [];
+  if (an.uploader) {
+    chips.push(rd.uploaderUrl ? `<a href="${esc(rd.uploaderUrl)}" target="_blank" rel="noopener noreferrer">${esc(an.uploader)}</a>` : `<b>${esc(an.uploader)}</b>`);
+  } else {
+    chips.push(`<b>${esc(p.n)}</b>`);
+  }
+  if (durStr) chips.push(`<span>${esc(durStr)}</span>`);
+  else if (k === 'i') chips.push('<span>Image</span>');
+  if (viewsStr) chips.push(`<span>${esc(viewsStr)} views</span>`);
+  if (likesStr) chips.push(`<span>${esc(likesStr)} likes</span>`);
 
-  const descBlock = rd.description
-    ? `<details class="dldesc" style="border:0;border-top:1px solid var(--ln);border-radius:0;background:none;margin:16px 0 0;padding:12px 0 0"><summary style="padding:0;font:600 13.5px var(--d)">Description ${I('chev',16)}</summary><p style="padding:8px 0 0;font-size:13px;white-space:pre-line">${esc(rd.description)}</p></details>`
+  const extraItems = [
+    `<div class="dl-kv"><span>Platform</span><b>${esc(p.n)}</b></div>`,
+    an.uploader ? `<div class="dl-kv"><span>Creator / Channel</span>${rd.uploaderUrl ? `<a href="${esc(rd.uploaderUrl)}" target="_blank" rel="noopener noreferrer">${esc(an.uploader)}</a>` : `<b>${esc(an.uploader)}</b>`}</div>` : '',
+    durStr ? `<div class="dl-kv"><span>Duration</span><b>${esc(durStr)}</b></div>` : '',
+    upDateStr ? `<div class="dl-kv"><span>Published</span><b>${esc(upDateStr)}</b></div>` : '',
+    viewsStr ? `<div class="dl-kv"><span>Views</span><b>${esc(viewsStr)}</b></div>` : '',
+    likesStr ? `<div class="dl-kv"><span>Likes</span><b>${esc(likesStr)}</b></div>` : '',
+    subSummary ? `<div class="dl-kv"><span>Subtitles</span><b>${esc(subSummary)}</b></div>` : '',
+    `<div class="dl-kv"><span>Available qualities</span><b>${fmtsCount || optsFor().length} options</b></div>`,
+    origUrl ? `<div class="dl-kv"><span>Source link</span><a href="${esc(origUrl)}" target="_blank" rel="noopener noreferrer">Open original ${I('ext',12)}</a></div>` : '',
+  ].filter(Boolean);
+
+  const summaryBlock = hasDistinctDesc
+    ? `<p class="dlcap${an.detailsOpen?' open':''}" id="dl-cap">${esc(rawDesc)}</p>`
+    : (rawTitle.length > 90 ? '' : '');
+  const extraBlock = `<div class="dl-more" id="dl-details-extra" style="display:${an.detailsOpen?'grid':'none'}">${extraItems.join('')}</div>`;
+  const hasMore = hasDistinctDesc || rawTitle.length > 90 || extraItems.length > 0;
+  const toggleBtn = hasMore
+    ? `<button type="button" class="dl-morebtn" id="dl-more-btn" aria-expanded="${an.detailsOpen}">${an.detailsOpen?'Show less':'Show more details'} ${I('chev',15)}</button>`
     : '';
 
-  return `<div class="dlc"><div class="dlthm">${thmBlock}<span class="plb">${lg(p,20)}${esc(p.n)}</span>${durStr ? `<span class="durb">${esc(durStr)}</span>` : ''}</div><h2 class="dltitle">${esc(an.title || 'Media File')}</h2><div class="dlmeta">${metaItems.join('')}</div>${descBlock}</div>`;
+  return `<div class="dlc"><div class="dlthm">${thmBlock}<span class="plb">${lg(p,20)}${esc(p.n)}</span>${durStr ? `<span class="durb">${esc(durStr)}</span>` : ''}</div><h2 class="dltitle${an.detailsOpen?' open':''}" id="dl-title">${esc(rawTitle)}</h2><div class="dlchips">${chips.join('<span aria-hidden="true" style="opacity:.45">·</span>')}</div>${summaryBlock}${extraBlock}${toggleBtn}</div>`;
+}
+
+function rightCardInner(k, O){
+  const p=an.p||{n:'Media',c:1,t:'Media',h:[],s:'media'};
+  if(an.st==='prog'){
+    return `<div class="det" style="margin-bottom:8px">${lg(p,20)}<span>Downloading ${esc(an.chosenLabel || 'media')}${an.chosenSize ? ' · ' + esc(an.chosenSize) : ''}</span></div><h3 style="font-size:20px;margin-bottom:14px">Preparing your file...</h3><div style="display:flex;justify-content:space-between;font-size:13.5px;color:var(--mut);margin-bottom:6px"><span id="pst">${esc(an.stage||'Downloading media...')}</span><span class="mono" id="ppc">${an.pct?an.pct+'%':''}</span></div><div class="pg"><i id="pb" style="width:${Math.max(an.pct||0, 4)}%"></i></div><div id="psp" class="mono" style="margin-top:10px;min-height:18px">${esc([an.speed,an.eta?`ETA ${an.eta}`:''].filter(Boolean).join(' · '))}</div><button class="btn" id="dl-cancel" style="margin-top:18px;width:100%">Cancel / Choose another quality</button>`;
+  }
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px"><h3 style="font-size:20px">Choose quality & format</h3><span class="mono">${O.length} options</span></div>${pickerHtmlFor(k,O)}`;
+}
+
+function bindPicker(O){
+  const card=$('#dl-picker-card');if(!card)return;
+  card.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{
+    const idx=+b.dataset.o;
+    an.opt=idx;
+    card.querySelectorAll('[data-o]').forEach(x=>{
+      const on=+x.dataset.o===idx;
+      x.classList.toggle('on',on);
+      x.setAttribute('aria-checked',String(on));
+    });
+    const dlb=$('#dlb'),sel=O[idx]||O[0];
+    if(dlb&&sel){
+      const ctaSize=(sel[1]&&/\d/.test(sel[1])&&!/Audio$/i.test(sel[1]))?` · ${sel[1]}`:'';
+      dlb.innerHTML=`${I('dl')} Download ${esc(sel[0])}${esc(ctaSize)}`;
+    }
+  });
+  card.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{an.tab=b.dataset.t;an.opt=0;updateRightCard();});
+  const cl=$('#cl');if(cl)cl.onchange=()=>{an.clip=cl.checked;updateRightCard();};
+  const ca=$('#ca');if(ca){ca.oninput=()=>an.a=ca.value;const cb=$('#cb');if(cb)cb.oninput=e=>an.b=e.target.value;}
+  const cancelBtn=$('#dl-cancel');if(cancelBtn)cancelBtn.onclick=()=>{if(dlPoll){clearInterval(dlPoll);dlPoll=null;}an.st='ready';updateRightCard();};
+  const d=$('#dlb');if(d)d.onclick=()=>startDownload(O);
+}
+
+function updateRightCard(O){
+  const card=$('#dl-picker-card');
+  if(!card){paint();return;}
+  const p=an.p||{n:'Media',c:1,t:'Media',h:[],s:'media'};
+  const k=effectiveKind(p),opts=O||optsFor();
+  card.innerHTML=rightCardInner(k,opts);
+  bindPicker(opts);
 }
 
 function doneHtml(k, O){
@@ -292,7 +354,7 @@ function doneHtml(k, O){
     ? `<img src="${esc(an.thumbnail)}" referrerpolicy="no-referrer" alt="" onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='grid'"><span class="dsm" style="display:none">${I(k==='a'?'audio':k==='i'?'image':'play',24)}</span>`
     : `<div class="dsm">${I(k==='a'?'audio':k==='i'?'image':'play',24)}</div>`;
 
-  return `<div class="dlc dl-done">
+  return `<div class="dlc dl-enter dl-done">
     <div class="ok-ring">${I('check',28)}</div>
     <h2 style="font-size:clamp(26px,3.6vw,36px);letter-spacing:-.04em;margin-bottom:6px">Download complete!</h2>
     <p style="color:var(--mut);font-size:15px">Your file has started saving to your device.</p>
@@ -335,18 +397,18 @@ function paint(){
   const p=an.p||{n:'Media',c:1,t:'Media',h:[],s:'media'};
   if(s==='idle'){
     r.innerHTML=$('#dl-main')
-      ? `<div class="dlc" style="max-width:680px;margin:0 auto;text-align:center;padding:42px 24px"><h2 style="font-size:26px;margin-bottom:8px">Paste a link to inspect & download</h2><p style="color:var(--mut);margin-bottom:22px">Enter any supported video, audio, or image link above to view details, file sizes, and quality options.</p><a class="btn k" href="#home">${I('back',16)} Back to home</a></div>`
+      ? `<div class="dlc dl-enter" style="max-width:680px;margin:0 auto;text-align:center;padding:42px 24px"><h2 style="font-size:26px;margin-bottom:8px">Paste a link to load & download</h2><p style="color:var(--mut);margin-bottom:22px">Enter any supported video, audio, or image link above to view details, file sizes, and quality options.</p><a class="btn k" href="#home">${I('back',16)} Back to home</a></div>`
       : '';
     return;
   }
   if(s==='load'){
-    r.innerHTML=`<div class="dlc" style="max-width:760px;margin:0 auto"><div class="det" style="margin-bottom:16px">${lg(p,24)}<span>Inspecting ${esc(p.n)} link & fetching formats...</span></div><div class="rrow"><div class="sk thm" style="height:104px;width:184px"></div><div style="flex:1;width:100%;display:grid;gap:10px"><div class="sk" style="height:18px;width:72%"></div><div class="sk" style="height:14px;width:44%"></div><div class="sk" style="height:14px;width:58%"></div></div></div><div class="sk" style="height:180px;margin-top:18px"></div></div>`;
+    r.innerHTML=`<div class="dlc dl-enter" style="max-width:760px;margin:0 auto"><div class="det" style="margin-bottom:16px">${lg(p,24)}<span>Loading ${esc(p.n)} media & formats...</span></div><div class="rrow"><div class="sk thm" style="height:104px;width:184px"></div><div style="flex:1;width:100%;display:grid;gap:10px"><div class="sk" style="height:18px;width:72%"></div><div class="sk" style="height:14px;width:44%"></div><div class="sk" style="height:14px;width:58%"></div></div></div><div class="sk" style="height:180px;margin-top:18px"></div></div>`;
     return;
   }
   if(s==='err'||s==='uns'){
     const heading=s==='uns'?'This site isn’t supported yet':(an.errMsg||'That doesn’t look like a link');
     const detail=s==='uns'?'See the <a href="#platforms" style="color:var(--ac)">full list of supported platforms</a>.':esc(an.errDetail||'Paste a full address beginning with https://');
-    r.innerHTML=`<div class="dlc" style="max-width:660px;margin:0 auto"><b style="color:var(--err);font-size:18px;display:block;margin-bottom:6px">${esc(heading)}</b><p style="color:var(--mut);font-size:14.5px">${detail}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px"><button class="btn k" id="again-err">${I('back',16)} Try another link</button>${an.url?`<button class="btn" id="retry-inspect">Retry</button>`:''}</div></div>`;
+    r.innerHTML=`<div class="dlc dl-enter" style="max-width:660px;margin:0 auto"><b style="color:var(--err);font-size:18px;display:block;margin-bottom:6px">${esc(heading)}</b><p style="color:var(--mut);font-size:14.5px">${detail}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px"><button class="btn k" id="again-err">${I('back',16)} Try another link</button>${an.url?`<button class="btn" id="retry-inspect">Retry</button>`:''}</div></div>`;
     const againErr=$('#again-err');if(againErr)againErr.onclick=()=>{an={...an,st:'idle',url:'',errMsg:'',errDetail:''};location.hash='home';setTimeout(()=>{const uInput=$('#u');if(uInput){uInput.value='';uInput.focus();}},60);};
     const retryBtn=$('#retry-inspect');if(retryBtn)retryBtn.onclick=()=>runInspect(an.url);
     return;
@@ -356,7 +418,7 @@ function paint(){
 
   if(s==='done'){
     r.innerHTML=doneHtml(k,O);
-    const ag=$('#again');if(ag)ag.onclick=()=>{an={...an,st:'idle',url:'',clip:false,realData:null,downloadUrl:null,altOpen:false,outputFileSize:0};location.hash='home';setTimeout(()=>{const uInput=$('#u');if(uInput){uInput.value='';uInput.focus();}},60);};
+    const ag=$('#again');if(ag)ag.onclick=()=>{an={...an,st:'idle',url:'',clip:false,realData:null,downloadUrl:null,altOpen:false,detailsOpen:false,outputFileSize:0};location.hash='home';setTimeout(()=>{const uInput=$('#u');if(uInput){uInput.value='';uInput.focus();}},60);};
     const mq=$('#dl-more-q');if(mq)mq.onclick=()=>{an.st='ready';paint();};
     const cp=$('#copy-site');if(cp)cp.onclick=async()=>{
       const val=$('#share-url')?.value||`${location.origin}${location.pathname}#home`;
@@ -370,17 +432,17 @@ function paint(){
     return;
   }
 
-  const rightPanel = s==='prog'
-    ? `<div class="dlc"><div class="det" style="margin-bottom:8px">${lg(p,20)}<span>Downloading ${esc(an.chosenLabel || 'media')}${an.chosenSize ? ' · ' + esc(an.chosenSize) : ''}</span></div><h3 style="font-size:20px;margin-bottom:14px">Preparing your file...</h3><div style="display:flex;justify-content:space-between;font-size:13.5px;color:var(--mut);margin-bottom:6px"><span id="pst">${esc(an.stage||'Downloading media...')}</span><span class="mono" id="ppc">${an.pct?an.pct+'%':''}</span></div><div class="pg"><i id="pb" style="width:${Math.max(an.pct||0, 4)}%"></i></div><div id="psp" class="mono" style="margin-top:10px;min-height:18px">${esc([an.speed,an.eta?`ETA ${an.eta}`:''].filter(Boolean).join(' · '))}</div><button class="btn" id="dl-cancel" style="margin-top:18px;width:100%">Cancel / Choose another quality</button></div>`
-    : `<div class="dlc"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px"><h3 style="font-size:20px">Choose quality & format</h3><span class="mono">${O.length} options</span></div>${pickerHtmlFor(k,O)}</div>`;
-
-  r.innerHTML=`<div class="dlg">${detailsCardHtml(k)}${rightPanel}</div>`;
-  r.querySelectorAll('[data-o]').forEach(b=>b.onclick=()=>{an.opt=+b.dataset.o;paint()});
-  r.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{an.tab=b.dataset.t;an.opt=0;paint()});
-  const cl=$('#cl');if(cl)cl.onchange=()=>{an.clip=cl.checked;paint()};
-  const ca=$('#ca');if(ca){ca.oninput=()=>an.a=ca.value;const cb=$('#cb');if(cb)cb.oninput=e=>an.b=e.target.value;}
-  const cancelBtn=$('#dl-cancel');if(cancelBtn)cancelBtn.onclick=()=>{if(dlPoll){clearInterval(dlPoll);dlPoll=null;}an.st='ready';paint();};
-  const d=$('#dlb');if(d)d.onclick=()=>startDownload(O);
+  r.innerHTML=`<div class="dlg dl-enter">${detailsCardHtml(k)}<div class="dlc" id="dl-picker-card">${rightCardInner(k,O)}</div></div>`;
+  const mb=$('#dl-more-btn');
+  if(mb)mb.onclick=()=>{
+    an.detailsOpen=!an.detailsOpen;
+    const t=$('#dl-title');if(t)t.classList.toggle('open',an.detailsOpen);
+    const c=$('#dl-cap');if(c)c.classList.toggle('open',an.detailsOpen);
+    const ex=$('#dl-details-extra');if(ex)ex.style.display=an.detailsOpen?'grid':'none';
+    mb.setAttribute('aria-expanded',String(an.detailsOpen));
+    mb.innerHTML=`${an.detailsOpen?'Show less':'Show more details'} ${I('chev',15)}`;
+  };
+  bindPicker(O);
 }
 
 function runInspect(rawUrl){
@@ -397,7 +459,7 @@ function runInspect(rawUrl){
   if(!p){
     p = { n: u.hostname.replace(/^www\./i, ''), c: 1, t: 'Media', h: [u.hostname], s: 'media' };
   }
-  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.altOpen=false;an.st='load';an.realData=null;an.title='';an.thumbnail='';an.uploader='';an.dur='';an.errMsg='';an.errDetail='';an.speed='';an.eta='';an.outputFileSize=0;paint();
+  an.p=p;an.tab='v';an.opt=0;an.clip=false;an.altOpen=false;an.detailsOpen=false;an.st='load';an.realData=null;an.title='';an.thumbnail='';an.uploader='';an.dur='';an.errMsg='';an.errDetail='';an.speed='';an.eta='';an.outputFileSize=0;paint();
 
   fetch('/api/v1/inspect', {
     method: 'POST',
@@ -512,7 +574,7 @@ function help(){
 
 function downloadPage(dlParam){
   const val = dlParam || an.url || '';
-  return `<section class="dlw"><div class="w"><div class="dltop"><a class="back" href="#home">${I('back',16)} Back to home</a><div class="dlq">${I('link',16)}<input id="u2" type="url" placeholder="Paste another video, audio or image link" aria-label="Paste another link" value="${esc(val)}"><button class="btn k" id="go2">Inspect ${I('arr',15)}</button></div></div><div id="dl-main"></div></div></section>`;
+  return `<section class="dlw"><div class="w"><div class="dltop"><a class="back" href="#home">${I('back',16)} Back to home</a><div class="dlq">${I('link',16)}<input id="u2" type="url" placeholder="Paste another video, audio or image link" aria-label="Paste another link" value="${esc(val)}"><button class="btn k" id="go2">Load ${I('arr',15)}</button></div></div><div id="dl-main"></div></div></section>`;
 }
 
 function bind(){

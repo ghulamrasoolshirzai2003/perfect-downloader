@@ -8,6 +8,7 @@ import {
   type PlatformRuntimeContext,
 } from '@pd/shared';
 import { validateUrlSsrfSafe } from './ssrf-guard';
+import { safeProbeUrl } from './http-safe';
 import { runYtDlpInspect } from './ytdlp-runner';
 import {
   extractWithFallback,
@@ -78,11 +79,22 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
     throw ssrfErr;
   }
 
-  const toInspectResultFromFallback = (
+  const toInspectResultFromFallback = async (
     fb: Awaited<ReturnType<typeof extractWithFallback>>,
     platId: string,
-  ): InspectResult | null => {
+  ): Promise<InspectResult | null> => {
     if (!fb || fb.formats.length === 0) return null;
+    const formatsToProbe = fb.formats.filter((f) => !f.filesize && !f.isHls && f.directUrl).slice(0, 4);
+    if (formatsToProbe.length > 0) {
+      await Promise.allSettled(
+        formatsToProbe.map(async (f) => {
+          const probe = await safeProbeUrl(f.directUrl, { timeoutMs: 2500, headers: f.headers, signal });
+          if (probe.contentLength && probe.contentLength > 1024 && !/html/i.test(probe.contentType)) {
+            f.filesize = probe.contentLength;
+          }
+        }),
+      );
+    }
     const formats = toPublicMediaFormats(fb.formats);
     const bestVideo = formats.find((f) => f.hasVideo) || formats[0];
     const bestAudio = formats.find((f) => f.isAudioOnly) || formats.find((f) => f.hasAudio);
@@ -98,11 +110,13 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
         requiresAttestation: platform.policy === 'restricted',
       },
       title: fb.title || 'Media File',
-      description: fb.description ? fb.description.slice(0, 500) : undefined,
+      description: fb.description ? fb.description.slice(0, 1200) : undefined,
       duration: fb.duration,
       thumbnail: fb.thumbnail,
       uploader: fb.uploader,
       uploaderUrl: fb.uploaderUrl,
+      viewCount: fb.viewCount,
+      likeCount: fb.likeCount,
       formats,
       subtitles: [],
       bestVideo,
@@ -114,7 +128,7 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
   const buildFallbackResult = async () => {
     if (!hasFallbackAdapter(platform.id)) return null;
     const fb = await extractWithFallback(platform.id, safeUrl.toString(), signal);
-    return toInspectResultFromFallback(fb, platform.id);
+    return await toInspectResultFromFallback(fb, platform.id);
   };
 
   // Helper to run yt-dlp and unwrap channel / playlist entries up to 2 hops
@@ -233,7 +247,7 @@ export async function inspectUrl(opts: InspectUrlOptions): Promise<InspectResult
 
   if (!rawMeta) {
     const genericFb = await extractGenericFallback(safeUrl.toString(), signal);
-    const genericRes = toInspectResultFromFallback(genericFb, platform.id);
+    const genericRes = await toInspectResultFromFallback(genericFb, platform.id);
     if (genericRes) return genericRes;
 
     if (isUnknownPlatform) {
